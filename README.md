@@ -19,7 +19,7 @@
 
 ### 方式 B：导入压缩包
 
-1. 到 [Releases](https://github.com/shibaiderman096/noname-netease-musicbox/releases) 下载 `网易云音乐盒-v1.0.0.zip`；
+1. 到 [Releases](https://github.com/shibaiderman096/noname-netease-musicbox/releases/latest) 下载 `noname-netease-musicbox-v1.0.0.zip`；
 2. 打开游戏 → `扩展` 菜单 → **导入扩展** → 选择该 zip；
 3. 提示导入成功后游戏会自动重启，扩展同时被启用。
 
