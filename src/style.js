@@ -18,13 +18,16 @@ export const MUSIC_BOX_CSS = `
 #nmb-mini div,
 #nmb-mini span,
 #nmb-mini button,
+#nmb-disc div,
+#nmb-disc span,
 #nmb-toast div {
 	position: static;
 	transition: none;
 	float: none;
 }
 #nmb-root div,
-#nmb-mini div {
+#nmb-mini div,
+#nmb-disc div {
 	display: block;
 }
 
@@ -32,6 +35,8 @@ export const MUSIC_BOX_CSS = `
 #nmb-root *,
 #nmb-mini,
 #nmb-mini *,
+#nmb-disc,
+#nmb-disc *,
 #nmb-toast {
 	box-sizing: border-box;
 	font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif;
@@ -607,9 +612,16 @@ export const MUSIC_BOX_CSS = `
 	box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
 	color: #e8e8ea;
 	max-width: 62vw;
+	cursor: move;
+	transition: none;
 }
 #nmb-mini.nmb-show {
 	display: flex;
+}
+#nmb-mini.nmb-dragged,
+#nmb-disc.nmb-dragged {
+	right: auto;
+	bottom: auto;
 }
 #nmb-mini .nmb-mini-cover {
 	width: 30px;
@@ -617,6 +629,7 @@ export const MUSIC_BOX_CSS = `
 	border-radius: 50%;
 	background: #2c2c35 center/cover no-repeat;
 	flex: none;
+	pointer-events: none;
 }
 #nmb-mini .nmb-mini-text {
 	font-size: 12px;
@@ -624,6 +637,7 @@ export const MUSIC_BOX_CSS = `
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
+	pointer-events: none;
 }
 #nmb-mini .nmb-btn {
 	appearance: none;
@@ -638,6 +652,85 @@ export const MUSIC_BOX_CSS = `
 }
 #nmb-mini .nmb-btn:hover {
 	background: #3b3b48;
+}
+#nmb-mini .nmb-mini-fold {
+	font-size: 12px;
+	opacity: 0.75;
+}
+
+/* ---------- 无操作后收起的圆形唱片 ---------- */
+#nmb-disc {
+	position: fixed;
+	right: 14px;
+	bottom: 14px;
+	width: 64px;
+	height: 64px;
+	z-index: 2147482999;
+	display: none;
+	cursor: pointer;
+	filter: drop-shadow(0 6px 16px rgba(0, 0, 0, 0.55));
+	transition: none;
+}
+#nmb-disc.nmb-show {
+	display: block;
+}
+#nmb-disc .nmb-disc-vinyl {
+	position: relative;
+	width: 100%;
+	height: 100%;
+	border-radius: 50%;
+	border: 1px solid #45454f;
+	background:
+		radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.06) 0 30%, rgba(0, 0, 0, 0) 31%),
+		repeating-radial-gradient(circle at 50% 50%, #14141a 0 2px, #1e1e26 2px 4px);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	overflow: hidden;
+}
+#nmb-disc .nmb-disc-cover {
+	width: 44%;
+	height: 44%;
+	border-radius: 50%;
+	background: #ec4141 center/cover no-repeat;
+	border: 1px solid rgba(255, 255, 255, 0.28);
+	box-shadow: 0 0 0 4px rgba(0, 0, 0, 0.35);
+}
+#nmb-disc .nmb-disc-hole {
+	position: absolute;
+	left: 50%;
+	top: 50%;
+	width: 7px;
+	height: 7px;
+	margin: -3.5px 0 0 -3.5px;
+	border-radius: 50%;
+	background: #0c0c10;
+	border: 1px solid #4a4a55;
+}
+#nmb-disc.nmb-playing .nmb-disc-vinyl {
+	animation: nmb-spin 9s linear infinite;
+}
+#nmb-disc .nmb-disc-tip {
+	position: absolute;
+	right: 2px;
+	bottom: -2px;
+	width: 16px;
+	height: 16px;
+	border-radius: 50%;
+	background: #ec4141;
+	color: #fff;
+	font-size: 10px;
+	line-height: 16px;
+	text-align: center;
+	border: 1px solid #1b1b21;
+}
+@keyframes nmb-spin {
+	from {
+		transform: rotate(0deg);
+	}
+	to {
+		transform: rotate(360deg);
+	}
 }
 
 #nmb-toast {

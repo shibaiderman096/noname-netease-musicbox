@@ -7,18 +7,29 @@
 import { ui } from "noname";
 import * as api from "./api.js";
 import { session, readConfig, writeConfig, viewState } from "./store.js";
-import { Player, MODE_LABELS, hasRunningOutput } from "./player.js";
+import { Player, MODE_LABELS, hasRunningOutput, readPlaybackRecord } from "./player.js";
 import { MUSIC_BOX_CSS } from "./style.js";
 import { qrEncode } from "./qrcode.js";
-import { EXT_NAME, LOGIN_URL, openExternal, escapeHtml, formatTime, formatCount, parsePlaylistId, getRequire } from "./util.js";
+import { EXT_NAME, LOGIN_URL, openExternal, escapeHtml, formatTime, formatCount, parsePlaylistId, getRequire, clamp } from "./util.js";
 
 let installed = false;
 let player = null;
 let root = null;
 let panel = null;
 let mini = null;
+let disc = null;
 let toastNode = null;
 let toastTimer = null;
+
+/** 右下角小窗 / 圆形唱片的状态 */
+const miniState = {
+	collapsed: false,
+	visible: false,
+	pos: null,
+	timer: null,
+	/** 最近一次拖动：{ kind, at }，用于区分「拖完松手」和「点击」 */
+	lastDrag: { kind: "", at: 0 },
+};
 
 const dom = {};
 const state = {
@@ -152,8 +163,21 @@ export function install() {
 		<button class="nmb-btn" data-act="prev" title="上一首">⏮</button>
 		<button class="nmb-btn" data-act="toggle" id="nmb-mini-toggle" title="播放/暂停">▶</button>
 		<button class="nmb-btn" data-act="next" title="下一首">⏭</button>
+		<button class="nmb-btn nmb-mini-fold" data-act="fold" title="收起为唱片">📀</button>
 		<button class="nmb-btn" data-act="open" title="展开音乐盒">🔍</button>`;
 	document.body.appendChild(mini);
+
+	// 收起后的圆形唱片：点击展开，可拖动
+	disc = document.createElement("div");
+	disc.id = "nmb-disc";
+	disc.title = "网易云音乐盒 · 点击展开";
+	disc.innerHTML = `
+		<div class="nmb-disc-vinyl">
+			<div class="nmb-disc-cover" id="nmb-disc-cover"></div>
+			<div class="nmb-disc-hole"></div>
+			<div class="nmb-disc-tip" id="nmb-disc-tip">♪</div>
+		</div>`;
+	document.body.appendChild(disc);
 
 	toastNode = document.createElement("div");
 	toastNode.id = "nmb-toast";
@@ -176,6 +200,8 @@ export function install() {
 	dom.miniText = mini.querySelector("#nmb-mini-text");
 	dom.miniCover = mini.querySelector("#nmb-mini-cover");
 	dom.miniToggle = mini.querySelector("#nmb-mini-toggle");
+	dom.discCover = disc.querySelector("#nmb-disc-cover");
+	dom.discTip = disc.querySelector("#nmb-disc-tip");
 	dom.playButtons = Array.from(root.querySelectorAll('[data-act="toggle"]'));
 
 	// 播放器
@@ -194,6 +220,28 @@ export function install() {
 	bindPlayerEvents();
 	bindDomEvents();
 	restorePanelPosition();
+
+	// 右下角小窗/唱片位置
+	let savedMiniPos = null;
+	try {
+		savedMiniPos = JSON.parse(readConfig("miniPos") || "null");
+	} catch (e) {
+		savedMiniPos = null;
+	}
+	const startPos = savedMiniPos && Number.isFinite(savedMiniPos.left) ? savedMiniPos : defaultMiniPos();
+	positionMini(startPos.left, startPos.top, !!savedMiniPos);
+	window.addEventListener("resize", () => {
+		if (miniState.pos) {
+			positionMini(miniState.pos.left, miniState.pos.top, false);
+		}
+	});
+	// 关闭 / 重载页面前记录播放位置，便于下次接着播
+	window.addEventListener("beforeunload", () => {
+		try {
+			player.saveNow();
+		} catch (e) {}
+	});
+
 	renderSide();
 	setView(state.view, true);
 
@@ -255,6 +303,8 @@ function updateTrackDom(track) {
 		dom.cover.style.backgroundImage = "";
 		dom.miniText.textContent = "未在播放";
 		dom.miniCover.style.backgroundImage = "";
+		dom.discCover.style.backgroundImage = "";
+		hideMini();
 		renderList();
 		return;
 	}
@@ -265,6 +315,8 @@ function updateTrackDom(track) {
 	dom.miniText.textContent = `${track.name} - ${track.artists}`;
 	dom.miniCover.style.backgroundImage = track.cover ? `url("${track.cover}")` : "";
 	dom.miniText.title = dom.miniText.textContent;
+	dom.discCover.style.backgroundImage = track.cover ? `url("${track.cover}")` : "";
+	disc.title = `${track.name} - ${track.artists}（点击展开音乐盒）`;
 	renderList();
 }
 
@@ -275,13 +327,17 @@ function bindPlayerEvents() {
 			button.textContent = "⏸";
 		}
 		dom.miniToggle.textContent = "⏸";
-		mini.classList.add("nmb-show");
+		if (!miniState.visible) {
+			miniState.collapsed = false;
+		}
+		updateMiniVisibility();
 	});
 	player.on("pause", () => {
 		for (const button of dom.playButtons) {
 			button.textContent = "▶";
 		}
 		dom.miniToggle.textContent = "▶";
+		updateMiniVisibility();
 	});
 	player.on("time", ms => {
 		if (state.seeking) {
@@ -367,6 +423,7 @@ function bindDomEvents() {
 
 	// 迷你条
 	mini.addEventListener("click", event => {
+		resetMiniTimer();
 		const button = event.target.closest("[data-act]");
 		if (!button) {
 			return;
@@ -378,10 +435,28 @@ function bindDomEvents() {
 			player.next(false);
 		} else if (action === "toggle") {
 			player.toggle();
+		} else if (action === "fold") {
+			collapseMini();
 		} else if (action === "open") {
 			open();
 		}
 	});
+	mini.addEventListener("mousemove", resetMiniTimer);
+	mini.addEventListener("mouseenter", resetMiniTimer);
+
+	// 圆形唱片：点击展开（刚拖动过唱片本身就不算点击）
+	disc.addEventListener("click", () => {
+		if (miniState.lastDrag.kind === "disc" && Date.now() - miniState.lastDrag.at < 300) {
+			return;
+		}
+		expandMini();
+	});
+	disc.addEventListener("mousemove", resetMiniTimer);
+	disc.addEventListener("mouseenter", resetMiniTimer);
+
+	// 两个都可以拖动
+	enableMiniDrag(mini, "bar");
+	enableMiniDrag(disc, "disc");
 
 	// 进度条
 	dom.seek.addEventListener("input", () => {
@@ -475,6 +550,193 @@ function restorePanelPosition() {
 }
 
 /* ------------------------------------------------------------------ *
+ * 右下角小窗 / 圆形唱片
+ * ------------------------------------------------------------------ */
+
+const DISC_SIZE = 64;
+
+/** 自动收起秒数（0 = 不收起） */
+function autoHideSeconds() {
+	const value = Number(readConfig("autoHide"));
+	return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function defaultMiniPos() {
+	return {
+		left: Math.max(8, (window.innerWidth || 1000) - DISC_SIZE - 14),
+		top: Math.max(8, (window.innerHeight || 800) - DISC_SIZE - 14),
+	};
+}
+
+/**
+ * 定位小窗与唱片（坐标以唱片左上角为基准，条形与其右下角对齐）
+ * @param {number} left
+ * @param {number} top
+ * @param {boolean} persist 是否写入配置
+ */
+function positionMini(left, top, persist = true) {
+	if (!mini || !disc) {
+		return;
+	}
+	const viewWidth = window.innerWidth || 1000;
+	const viewHeight = window.innerHeight || 800;
+	const discLeft = clamp(left, 0, Math.max(0, viewWidth - DISC_SIZE));
+	const discTop = clamp(top, 0, Math.max(0, viewHeight - DISC_SIZE));
+	miniState.pos = { left: discLeft, top: discTop };
+
+	disc.classList.add("nmb-dragged");
+	disc.style.left = `${discLeft}px`;
+	disc.style.top = `${discTop}px`;
+
+	const barWidth = mini.offsetWidth || 280;
+	const barHeight = mini.offsetHeight || 44;
+	mini.classList.add("nmb-dragged");
+	mini.style.left = `${clamp(discLeft + DISC_SIZE - barWidth, 0, Math.max(0, viewWidth - barWidth))}px`;
+	mini.style.top = `${clamp(discTop + DISC_SIZE - barHeight, 0, Math.max(0, viewHeight - barHeight))}px`;
+
+	if (persist) {
+		writeConfig("miniPos", JSON.stringify(miniState.pos));
+	}
+}
+
+/** 刷新小窗/唱片的显示状态 */
+function updateMiniVisibility() {
+	if (!mini || !disc) {
+		return;
+	}
+	const active = !!player && (player.playing || player.hasSource);
+	const panelOpen = !!(root && root.classList.contains("nmb-open"));
+	if (!active || panelOpen) {
+		mini.classList.remove("nmb-show");
+		disc.classList.remove("nmb-show");
+		miniState.visible = false;
+		clearTimeout(miniState.timer);
+		miniState.timer = null;
+		return;
+	}
+	miniState.visible = true;
+	const playing = player.playing;
+	disc.classList.toggle("nmb-playing", playing);
+	dom.discTip.textContent = playing ? "♪" : "⏸";
+	if (miniState.collapsed) {
+		disc.classList.add("nmb-show");
+		mini.classList.remove("nmb-show");
+	} else {
+		mini.classList.add("nmb-show");
+		disc.classList.remove("nmb-show");
+		if (miniState.pos) {
+			positionMini(miniState.pos.left, miniState.pos.top, false);
+		}
+	}
+	resetMiniTimer();
+}
+
+/** 重置「无操作自动收起」计时 */
+function resetMiniTimer() {
+	clearTimeout(miniState.timer);
+	miniState.timer = null;
+	if (miniState.collapsed || !miniState.visible) {
+		return;
+	}
+	const seconds = autoHideSeconds();
+	if (!seconds) {
+		return;
+	}
+	miniState.timer = setTimeout(() => {
+		collapseMini(false);
+	}, seconds * 1000);
+}
+
+/**
+ * 收起为圆形唱片
+ * @param {boolean} showTip 是否提示（自动收起时不打扰）
+ */
+function collapseMini(showTip = true) {
+	miniState.collapsed = true;
+	updateMiniVisibility();
+	if (showTip) {
+		toast("已收起为唱片，点击唱片可重新展开", 2000);
+	}
+}
+
+/** 由唱片展开为完整小窗 */
+function expandMini() {
+	miniState.collapsed = false;
+	updateMiniVisibility();
+}
+
+function hideMini() {
+	if (!mini || !disc) {
+		return;
+	}
+	mini.classList.remove("nmb-show");
+	disc.classList.remove("nmb-show");
+	miniState.visible = false;
+	clearTimeout(miniState.timer);
+	miniState.timer = null;
+}
+
+/** 拖动小窗 / 唱片 */
+function enableMiniDrag(element, kind) {
+	let dragging = false;
+	let moved = false;
+	let startX = 0;
+	let startY = 0;
+	let originLeft = 0;
+	let originTop = 0;
+
+	const onMove = event => {
+		if (!dragging) {
+			return;
+		}
+		const dx = event.clientX - startX;
+		const dy = event.clientY - startY;
+		if (!moved && Math.abs(dx) + Math.abs(dy) < 4) {
+			return;
+		}
+		moved = true;
+		miniState.lastDrag = { kind, at: Date.now() };
+		const barWidth = mini.offsetWidth || 280;
+		const barHeight = mini.offsetHeight || 44;
+		if (kind === "disc") {
+			positionMini(originLeft + dx, originTop + dy, false);
+		} else {
+			positionMini(originLeft + dx + barWidth - DISC_SIZE, originTop + dy + barHeight - DISC_SIZE, false);
+		}
+		resetMiniTimer();
+	};
+
+	const onUp = () => {
+		if (!dragging) {
+			return;
+		}
+		dragging = false;
+		document.removeEventListener("mousemove", onMove);
+		document.removeEventListener("mouseup", onUp);
+		if (moved) {
+			miniState.lastDrag = { kind, at: Date.now() };
+			writeConfig("miniPos", JSON.stringify(miniState.pos));
+		}
+	};
+
+	element.addEventListener("mousedown", event => {
+		if (event.target.closest("button")) {
+			return;
+		}
+		const rect = element.getBoundingClientRect();
+		dragging = true;
+		moved = false;
+		startX = event.clientX;
+		startY = event.clientY;
+		originLeft = rect.left;
+		originTop = rect.top;
+		document.addEventListener("mousemove", onMove);
+		document.addEventListener("mouseup", onUp);
+		event.preventDefault();
+	});
+}
+
+/* ------------------------------------------------------------------ *
  * 面板开关
  * ------------------------------------------------------------------ */
 
@@ -483,7 +745,7 @@ export function open(view) {
 		install();
 	}
 	root.classList.add("nmb-open");
-	mini.classList.remove("nmb-show");
+	hideMini();
 	if (view) {
 		setView(view);
 	} else {
@@ -513,11 +775,7 @@ export function close() {
 		return;
 	}
 	root.classList.remove("nmb-open");
-	if (player && !player.playing && !player.hasSource) {
-		mini.classList.remove("nmb-show");
-	} else if (player) {
-		mini.classList.add("nmb-show");
-	}
+	updateMiniVisibility();
 	stopQrPolling();
 }
 
@@ -550,6 +808,45 @@ export function autoAttach() {
 		return;
 	}
 	install();
+}
+
+/**
+ * 扩展加载（每次打开游戏）时的启动逻辑：
+ *  1. 音频输出窗口还在 —— 说明是「重新开始」之类的页面重载，直接接管界面，不打断播放；
+ *  2. 否则若开启了「开机续播」且本地有上次的播放记录，就自动接着上次的歌曲与进度播放。
+ */
+export function bootstrap() {
+	if (installed) {
+		return;
+	}
+	if (typeof document === "undefined" || !document.body) {
+		setTimeout(bootstrap, 500);
+		return;
+	}
+	if (hasRunningOutput()) {
+		install();
+		return;
+	}
+	if (readConfig("autoResume") === false) {
+		return;
+	}
+	const record = readPlaybackRecord();
+	if (!record || !record.tracks || !record.tracks.length) {
+		return;
+	}
+	install();
+	setTimeout(() => {
+		player
+			.resumeLast()
+			.then(started => {
+				if (!started) {
+					return;
+				}
+				const track = player.current;
+				toast(track ? `继续播放：${track.name} - ${track.artists}` : "已继续上次的播放", 2600);
+			})
+			.catch(e => console.warn(`[${EXT_NAME}] 续播失败`, e));
+	}, 400);
 }
 
 /** 关闭音频输出窗口（删除扩展时调用） */
@@ -1392,6 +1689,7 @@ export const musicBox = {
 	loginSummary,
 	playingSummary,
 	autoAttach,
+	bootstrap,
 	closeOutput,
 	/** 按歌单 ID 或链接打开歌单（扩展页面 / 开局自动显示使用） */
 	openPlaylistById,

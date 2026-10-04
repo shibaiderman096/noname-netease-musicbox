@@ -23,6 +23,28 @@ const SINK_TITLE = "NMB-AUDIO-SINK";
 const SINK_PAGE = `extension/${EXT_NAME}/player.html`;
 const STORAGE_KEY = "nmb_playback_state_v1";
 const POLL_INTERVAL = 600;
+/** 播放位置写盘的节流间隔 */
+const SAVE_INTERVAL = 4000;
+
+/** 读取上一次的播放记录（扩展启动时判断要不要续播） */
+export function readPlaybackRecord() {
+	try {
+		const data = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
+		if (!data || !Array.isArray(data.tracks) || !data.tracks.length) {
+			return null;
+		}
+		return data;
+	} catch (e) {
+		return null;
+	}
+}
+
+/** 清除播放记录 */
+export function clearPlaybackRecord() {
+	try {
+		localStorage.removeItem(STORAGE_KEY);
+	} catch (e) {}
+}
 
 /** 是否已经有正在运行的音频输出窗口（页面重载后据此决定要不要接管界面） */
 export function hasRunningOutput() {
@@ -82,6 +104,9 @@ export class Player extends Emitter {
 			error: 0,
 		};
 		this._pollTimer = null;
+		this._lastSave = 0;
+		this._savedPosition = 0;
+		this._savedAt = 0;
 
 		this._bindLocalAudio();
 		this._restoreState();
@@ -311,6 +336,7 @@ export class Player extends Emitter {
 			this.emit("volume", state.volume);
 		}
 		this.emit("time", (state.currentTime || 0) * 1000);
+		this._saveState();
 		if (state.duration !== previous.duration) {
 			this.emit("duration", (state.duration || 0) * 1000);
 		}
@@ -337,6 +363,7 @@ export class Player extends Emitter {
 		});
 		audio.addEventListener("timeupdate", () => {
 			this.emit("time", audio.currentTime * 1000);
+			this._saveState();
 		});
 		audio.addEventListener("loadedmetadata", () => {
 			this.state.duration = audio.duration || 0;
@@ -405,7 +432,12 @@ export class Player extends Emitter {
 	 * 状态持久化（跨页面重载恢复）
 	 * ------------------------------------------------------------------ */
 
-	_saveState() {
+	_saveState(force = false) {
+		const now = Date.now();
+		if (!force && now - (this._lastSave || 0) < SAVE_INTERVAL) {
+			return;
+		}
+		this._lastSave = now;
 		try {
 			localStorage.setItem(
 				STORAGE_KEY,
@@ -415,7 +447,9 @@ export class Player extends Emitter {
 					mode: this.mode,
 					title: this.playlistTitle,
 					id: this.playlistId,
-					time: Date.now(),
+					/** 播放位置（秒），用于下次打开游戏接着播 */
+					position: Math.max(0, Math.floor((this.currentTime || 0) / 1000)),
+					savedAt: now,
 				})
 			);
 		} catch (e) {}
@@ -423,8 +457,8 @@ export class Player extends Emitter {
 
 	_restoreState() {
 		try {
-			const data = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
-			if (!data || !Array.isArray(data.tracks) || !data.tracks.length) {
+			const data = readPlaybackRecord();
+			if (!data) {
 				return;
 			}
 			this.tracks = data.tracks;
@@ -432,7 +466,34 @@ export class Player extends Emitter {
 			this.mode = PLAY_MODES.includes(data.mode) ? data.mode : this.mode;
 			this.playlistTitle = data.title || "";
 			this.playlistId = data.id || "";
+			this._savedPosition = Number(data.position) || 0;
+			this._savedAt = Number(data.savedAt) || 0;
 		} catch (e) {}
+	}
+
+	/**
+	 * 接着上次的记录播放（打开游戏时用）
+	 * @returns {Promise<boolean>} 是否真的开始播放
+	 */
+	async resumeLast() {
+		if (!this.tracks.length || this.playing || this.hasSource) {
+			return false;
+		}
+		const index = this.index >= 0 && this.index < this.tracks.length ? this.index : 0;
+		const track = this.tracks[index];
+		let startAt = Number(this._savedPosition) || 0;
+		// 太靠近结尾就从头播；记录太旧（超过 12 小时）也从头播
+		if (track && track.duration) {
+			if (startAt > track.duration / 1000 - 15) {
+				startAt = 0;
+			}
+		}
+		if (this._savedAt && Date.now() - this._savedAt > 12 * 3600 * 1000) {
+			startAt = 0;
+		}
+		this._savedPosition = 0;
+		await this.playIndex(index, { startAt });
+		return true;
 	}
 
 	/* ------------------------------------------------------------------ *
@@ -488,16 +549,16 @@ export class Player extends Emitter {
 		this.emit("list", this.tracks);
 		if (!this.tracks.length) {
 			this.stop();
-			this._saveState();
+			this._saveState(true);
 			return;
 		}
-		this._saveState();
+		this._saveState(true);
 		if (autoplay) {
 			this.playIndex(clamp(startIndex, 0, this.tracks.length - 1));
 		}
 	}
 
-	async playIndex(index) {
+	async playIndex(index, options = {}) {
 		if (!this.tracks.length || index < 0 || index >= this.tracks.length) {
 			return;
 		}
@@ -506,7 +567,7 @@ export class Player extends Emitter {
 		this.index = index;
 		this.emit("track", track);
 		this.emit("loading", true);
-		this._saveState();
+		this._saveState(true);
 		try {
 			const info = await this._resolveUrl(track.id);
 			if (token !== this.requestToken) {
@@ -520,6 +581,8 @@ export class Player extends Emitter {
 			const result = await this._loadUrl(info.url);
 			if (result && result.ok === false) {
 				this.emit("error", new Error(result.error || "播放失败"));
+			} else if (options.startAt > 1) {
+				await this.seekSeconds(options.startAt);
 			}
 		} catch (e) {
 			if (token === this.requestToken) {
@@ -530,6 +593,35 @@ export class Player extends Emitter {
 				this.emit("loading", false);
 			}
 		}
+	}
+
+	/** 按秒跳转（续播用；与 seek(ratio) 区分） */
+	async seekSeconds(seconds) {
+		const target = Number(seconds) || 0;
+		if (target <= 1) {
+			return;
+		}
+		this.state.currentTime = target;
+		if (this.output === "sink") {
+			await this._sinkEval(`NMBSink.seek(${target})`).catch(() => {});
+			return;
+		}
+		try {
+			if (this.audio.readyState >= 1) {
+				this.audio.currentTime = target;
+			} else {
+				await new Promise(resolve => {
+					const done = () => {
+						try {
+							this.audio.currentTime = target;
+						} catch (e) {}
+						resolve();
+					};
+					this.audio.addEventListener("loadedmetadata", done, { once: true });
+					setTimeout(done, 1500);
+				});
+			}
+		} catch (e) {}
 	}
 
 	async _resolveUrl(id) {
@@ -573,6 +665,7 @@ export class Player extends Emitter {
 		this.state.paused = true;
 		this.emit("pause");
 		this._resumeGameBgm();
+		this._saveState(true);
 		if (this.output === "sink") {
 			await this._sinkEval("NMBSink.pause()").catch(() => {});
 			return;
@@ -612,7 +705,7 @@ export class Player extends Emitter {
 		}
 		this.index = -1;
 		this.emit("track", null);
-		this._saveState();
+		this._saveState(true);
 	}
 
 	next(auto = false) {
@@ -696,7 +789,7 @@ export class Player extends Emitter {
 			return this.mode;
 		}
 		this.mode = mode;
-		this._saveState();
+		this._saveState(true);
 		this.emit("mode", mode);
 		return mode;
 	}
@@ -716,6 +809,11 @@ export class Player extends Emitter {
 		if (!this.pauseGameBgm) {
 			this._resumeGameBgm();
 		}
+	}
+
+	/** 立即把当前状态与播放位置写入本地记录（关闭/重载页面前调用） */
+	saveNow() {
+		this._saveState(true);
 	}
 
 	/** 关闭音频输出窗口（删除扩展时调用） */

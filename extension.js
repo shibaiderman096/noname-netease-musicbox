@@ -130,6 +130,21 @@ export default async function () {
 			init: false,
 			intro: "进入对局后自动打开音乐盒，并载入「默认歌单」",
 		},
+		autoResume: {
+			name: "开机续播",
+			init: true,
+			intro: "开启后，每次打开游戏都会自动接着播放上次的歌曲与进度（关闭游戏时会记住播放位置）",
+		},
+		autoHide: {
+			name: "小窗自动收起",
+			input: true,
+			init: "5",
+			intro: "右下角小窗多少秒无操作后收起为圆形唱片（0 表示不收起），点击唱片可重新展开",
+			onblur() {
+				const value = Number(readInput(this));
+				writeConfig("autoHide", Number.isFinite(value) && value > 0 ? value : 0);
+			},
+		},
 		pauseBgm: {
 			name: "暂停游戏BGM",
 			init: true,
@@ -193,7 +208,12 @@ export default async function () {
 3. 播放控制：底部有上一首／播放暂停／下一首／播放模式、进度条与音量；
    也可以在对局中点击右上角「音乐」按钮随时呼出。
 
-4. 说明：未登录时可以听推荐歌单、排行榜里的免费歌曲；
+   右下角的悬浮小窗可以直接拖动到任意位置；无操作几秒后会自动收起成圆形唱片（点击唱片再展开）。
+
+4. 开机续播：开启「开机续播」后，每次打开游戏都会自动接着上次的歌曲和进度继续播放；
+   可以在扩展页面的「开机续播」里关闭，或把「小窗自动收起」设为 0 让它一直保持完整小窗。
+
+5. 说明：未登录时可以听推荐歌单、排行榜里的免费歌曲；
    VIP 歌曲未登录时只能试听 45 秒片段，登录会员账号后可完整播放。`
 				);
 				return false;
@@ -210,7 +230,7 @@ export default async function () {
 			author: "shibaiderman096",
 			diskURL: "https://github.com/libnoname/noname",
 			forumURL: "https://github.com/shibaiderman096/noname-netease-musicbox",
-			version: "1.0.2",
+			version: "1.1.0",
 			nopack: true,
 		},
 		precontent(data) {
@@ -219,9 +239,10 @@ export default async function () {
 				api.setCookie(data.cookie);
 			}
 			// 游戏「重新开始」会重载页面；若音频输出窗口还在播放，自动把控制界面恢复出来
+			// 否则按「开机续播」设置，接着上次的记录播放
 			setTimeout(() => {
 				try {
-					musicBox.autoAttach();
+					musicBox.bootstrap();
 				} catch (e) {
 					console.warn(`[${EXT_NAME}] 恢复音乐盒状态失败`, e);
 				}

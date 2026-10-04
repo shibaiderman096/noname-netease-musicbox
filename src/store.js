@@ -20,8 +20,10 @@ const DEFAULTS = {
 	quality: "exhigh",
 	pauseBgm: true,
 	autoOpen: false,
+	autoResume: true,
+	autoHide: 5,
+	miniPos: "",
 	panelPos: "",
-	proxy: "",
 };
 
 /** 读取配置（带默认值） */
