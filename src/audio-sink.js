@@ -11,7 +11,7 @@ const audio = document.getElementById("audio");
 let lastError = 0;
 /** 游戏页面每次调用（轮询状态也算）都会刷新心跳，用于兜底退出 */
 let lastBeat = Date.now();
-const HEARTBEAT_TIMEOUT = 40000;
+const HEARTBEAT_TIMEOUT = 45000;
 
 audio.addEventListener("error", () => {
 	lastError = audio.error ? audio.error.code || -1 : -1;
@@ -107,11 +107,11 @@ window.NMBSink = {
 	},
 };
 
-/* 退出兜底：
-   1) 本窗口是游戏窗口的子窗口，关闭游戏时会自动结束；
-   2) 若上面那条链路不可用，检测到没有其它窗口时自行退出；
-   3) 再兜底：超过 40 秒收不到游戏页面的心跳（轮询状态也算）就自行退出，
-      避免游戏已关闭却留下后台音乐进程。 */
+/* 退出兜底（多重保险，按优先级）：
+   1) 本窗口是游戏窗口的子窗口，正常关闭游戏时会自动结束；
+   2) 本窗口启用了 @electron/remote，每秒检查一次：系统里已经没有别的窗口（游戏窗口已关闭）
+      就立刻销毁自己 —— 这是最可靠也最快的一条；
+   3) 万一 remote 不可用，则用「45 秒收不到游戏页面心跳」兜底（轮询状态也算心跳）。 */
 (function watchdog() {
 	let remote = null;
 	try {
@@ -127,18 +127,31 @@ window.NMBSink = {
 			self = null;
 		}
 	}
+
+	const quitSelf = () => {
+		try {
+			if (self && !self.isDestroyed()) {
+				self.destroy();
+				return;
+			}
+		} catch (e) {}
+		try {
+			window.close();
+		} catch (e) {}
+	};
+
 	setInterval(() => {
 		if (self && remote) {
 			try {
 				const others = remote.BrowserWindow.getAllWindows().filter(win => win.id !== self.id);
 				if (!others.length) {
-					window.close();
+					quitSelf();
 					return;
 				}
 			} catch (e) {}
 		}
 		if (Date.now() - lastBeat > HEARTBEAT_TIMEOUT) {
-			window.close();
+			quitSelf();
 		}
-	}, 2000);
+	}, 1000);
 })();

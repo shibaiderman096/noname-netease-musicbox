@@ -176,6 +176,9 @@ export class Player extends Emitter {
 					contextIsolation: false,
 					backgroundThrottling: false,
 					webSecurity: false,
+					// 让本窗口也能使用 @electron/remote，从而自己判断「游戏窗口是否还在」并及时退出
+					// @ts-ignore
+					enableRemoteModule: true,
 				},
 			});
 			const base = typeof location !== "undefined" ? location.href : "http://localhost:8089/index.html";

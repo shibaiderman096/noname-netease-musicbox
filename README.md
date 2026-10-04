@@ -1,10 +1,12 @@
 # 网易云音乐盒（无名杀扩展）
 
+> 本扩展基于 **[无名杀 · libnoname/noname](https://github.com/libnoname/noname)** 开发，遵循 GPLv3 协议。
+
 在无名杀里听网易云音乐：**扩展页面一键调用系统浏览器登录网易云账号**，也可以扫码登录；登录后可以选择自己的歌单、推荐歌单、排行榜或直接粘贴歌单链接，随时点歌播放；播放时会自动暂停游戏背景音乐，对局中也能用小窗控制。
 
 > **游戏内「重新开始 / 重来」不会打断音乐。** 音频输出放在一个独立的隐藏窗口里，无名杀重载页面时它不受影响，重载完成后音乐盒会自动重新接管界面（小窗、歌单、进度都还在）。
 
-- 版本：1.0.1
+- 版本：1.0.2
 - 目录：`<游戏目录>/resources/app/extension/网易云音乐盒/`
 - 依赖：无（weapi 加密、二维码生成均为扩展内自带的纯 JS 实现）
 
@@ -21,7 +23,7 @@
 
 ### 方式 B：导入压缩包
 
-1. 到 [Releases](https://github.com/shibaiderman096/noname-netease-musicbox/releases/latest) 下载 `noname-netease-musicbox-v1.0.1.zip`；
+1. 到 [Releases](https://github.com/shibaiderman096/noname-netease-musicbox/releases/latest) 下载 `noname-netease-musicbox-v1.0.2.zip`；
 2. 打开游戏 → `扩展` 菜单 → **导入扩展** → 选择该 zip；
 3. 提示导入成功后游戏会自动重启，扩展同时被启用。
 
@@ -108,9 +110,24 @@
 **7. 想彻底卸载？**
 删除 `resources/app/extension/网易云音乐盒/` 目录，并在 `扩展` 菜单里删除该扩展即可（`lib.config` 里的相关键会自动清理）。
 
+**8. 关闭游戏后音乐还在响？**
+正常不会。音频窗口每秒检查一次"游戏窗口是否还在"，游戏一关它就立刻销毁自己；另外它还挂在游戏窗口下、并有 45 秒心跳兜底。若仍遇到，说明该窗口未能读取窗口列表（例如运行环境阉割了 `@electron/remote`），可以在任务管理器里结束 `noname.exe`，并反馈给我。
+
 ---
 
-## 六、目录结构
+## 六、相关链接
+
+| 项目 | 地址 |
+| --- | --- |
+| 无名杀（游戏本体） | <https://github.com/libnoname/noname> |
+| 本扩展仓库 | <https://github.com/shibaiderman096/noname-netease-musicbox> |
+| 本扩展下载（Releases） | <https://github.com/shibaiderman096/noname-netease-musicbox/releases> |
+
+> 无名杀采用 GPLv3 协议，本扩展同样以 GPLv3 发布（见 [LICENSE](./LICENSE)）。
+
+---
+
+## 七、目录结构
 
 ```
 网易云音乐盒/
@@ -131,6 +148,8 @@
     └── util.js         工具函数（打开外部浏览器、时间格式化、事件触发器）
 ```
 
-## 七、说明
+## 八、说明
 
 本扩展只调用网易云音乐官方公开接口（`music.163.com/weapi`），不上传任何数据；登录状态（Cookie）只保存在你本机的无名杀配置里。
+
+本扩展基于 [无名杀（libnoname/noname）](https://github.com/libnoname/noname) 开发，与网易云音乐官方无关，仅供个人学习与自用。
