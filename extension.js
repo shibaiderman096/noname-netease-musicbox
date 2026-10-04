@@ -206,11 +206,11 @@ export default async function () {
 		editable: false,
 		config,
 		package: {
-			intro: "在无名杀里听网易云音乐：扩展页面一键调用系统浏览器登录网易云账号，也可扫码登录；支持我的歌单、推荐歌单、排行榜、搜索与歌单 ID，随时选歌播放。",
+			intro: "在无名杀里听网易云音乐：扩展页面一键调用系统浏览器登录网易云账号，也可扫码登录；支持我的歌单、推荐歌单、排行榜、搜索与歌单 ID，随时选歌播放。游戏内重新开始/重来也不会打断播放。",
 			author: "shibaiderman096",
 			diskURL: "",
 			forumURL: "",
-			version: "1.0.0",
+			version: "1.0.1",
 			nopack: true,
 		},
 		precontent(data) {
@@ -218,6 +218,14 @@ export default async function () {
 			if (data && data.cookie) {
 				api.setCookie(data.cookie);
 			}
+			// 游戏「重新开始」会重载页面；若音频输出窗口还在播放，自动把控制界面恢复出来
+			setTimeout(() => {
+				try {
+					musicBox.autoAttach();
+				} catch (e) {
+					console.warn(`[${EXT_NAME}] 恢复音乐盒状态失败`, e);
+				}
+			}, 1200);
 			// 进入对局后自动显示音乐盒
 			if (data && data.autoOpen) {
 				const openAfterArena = () => {
@@ -247,6 +255,7 @@ export default async function () {
 		},
 		onremove() {
 			try {
+				musicBox.closeOutput();
 				musicBox.close();
 			} catch (e) {}
 		},

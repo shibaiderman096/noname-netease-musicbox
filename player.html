@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+	<head>
+		<meta charset="utf-8" />
+		<title>NMB-AUDIO-SINK</title>
+		<style>
+			html,
+			body {
+				margin: 0;
+				background: #16161c;
+				color: #8a8a95;
+				font: 12px/1.7 "Microsoft YaHei", sans-serif;
+			}
+			#info {
+				padding: 10px 12px;
+			}
+			#info b {
+				color: #ec4141;
+			}
+		</style>
+	</head>
+	<body>
+		<div id="info"><b>网易云音乐盒</b> · 音频输出窗口（游戏重载时音乐不会中断，请勿手动关闭）</div>
+		<audio id="audio" preload="none"></audio>
+		<script type="module" src="./src/audio-sink.js"></script>
+	</body>
+</html>
