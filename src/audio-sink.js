@@ -9,6 +9,9 @@
  */
 const audio = document.getElementById("audio");
 let lastError = 0;
+/** 游戏页面每次调用（轮询状态也算）都会刷新心跳，用于兜底退出 */
+let lastBeat = Date.now();
+const HEARTBEAT_TIMEOUT = 40000;
 
 audio.addEventListener("error", () => {
 	lastError = audio.error ? audio.error.code || -1 : -1;
@@ -30,12 +33,20 @@ function asResult(promise) {
 	);
 }
 
+/** 每个方法都会刷新心跳（见下方 watchdog 的第 3 条兜底） */
+
 window.NMBSink = {
 	ping() {
+		lastBeat = Date.now();
 		return "pong";
+	},
+	beat() {
+		lastBeat = Date.now();
+		return Date.now();
 	},
 	/** 载入并播放 */
 	load(url, autoplay = true) {
+		lastBeat = Date.now();
 		lastError = 0;
 		audio.src = url;
 		try {
@@ -47,13 +58,16 @@ window.NMBSink = {
 		return asResult(audio.play());
 	},
 	play() {
+		lastBeat = Date.now();
 		return asResult(audio.play());
 	},
 	pause() {
+		lastBeat = Date.now();
 		audio.pause();
 		return { ok: true };
 	},
 	stop() {
+		lastBeat = Date.now();
 		audio.pause();
 		audio.removeAttribute("src");
 		try {
@@ -63,6 +77,7 @@ window.NMBSink = {
 		return { ok: true };
 	},
 	seek(seconds) {
+		lastBeat = Date.now();
 		try {
 			if (isFinite(seconds)) {
 				audio.currentTime = Math.max(0, Number(seconds) || 0);
@@ -71,12 +86,14 @@ window.NMBSink = {
 		return { ok: true };
 	},
 	volume(value) {
+		lastBeat = Date.now();
 		const volume = Math.min(1, Math.max(0, Number(value) || 0));
 		audio.volume = volume;
 		return { ok: true, volume };
 	},
 	/** 供游戏页面轮询的状态 */
 	state() {
+		lastBeat = Date.now();
 		return {
 			hasSrc: !!(audio.currentSrc || audio.getAttribute("src")),
 			paused: !!audio.paused,
@@ -90,8 +107,11 @@ window.NMBSink = {
 	},
 };
 
-/* 兜底：万一没有随游戏窗口一起关闭，检测到没有其它窗口时自行退出。
-   （本窗口通常是游戏窗口的子窗口，关闭游戏时会自动结束；这里只作保险。） */
+/* 退出兜底：
+   1) 本窗口是游戏窗口的子窗口，关闭游戏时会自动结束；
+   2) 若上面那条链路不可用，检测到没有其它窗口时自行退出；
+   3) 再兜底：超过 40 秒收不到游戏页面的心跳（轮询状态也算）就自行退出，
+      避免游戏已关闭却留下后台音乐进程。 */
 (function watchdog() {
 	let remote = null;
 	try {
@@ -99,21 +119,26 @@ window.NMBSink = {
 	} catch (e) {
 		remote = null;
 	}
-	if (!remote || !remote.BrowserWindow) {
-		return;
-	}
 	let self = null;
-	try {
-		self = remote.getCurrentWindow();
-	} catch (e) {
-		return;
+	if (remote && remote.BrowserWindow) {
+		try {
+			self = remote.getCurrentWindow();
+		} catch (e) {
+			self = null;
+		}
 	}
 	setInterval(() => {
-		try {
-			const others = remote.BrowserWindow.getAllWindows().filter(win => win.id !== self.id);
-			if (!others.length) {
-				window.close();
-			}
-		} catch (e) {}
+		if (self && remote) {
+			try {
+				const others = remote.BrowserWindow.getAllWindows().filter(win => win.id !== self.id);
+				if (!others.length) {
+					window.close();
+					return;
+				}
+			} catch (e) {}
+		}
+		if (Date.now() - lastBeat > HEARTBEAT_TIMEOUT) {
+			window.close();
+		}
 	}, 2000);
 })();
