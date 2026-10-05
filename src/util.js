@@ -33,6 +33,18 @@ export function getRequire() {
  * @returns {boolean} 是否成功调用
  */
 export function openExternal(url) {
+	// 安卓 / iOS 客户端（Cordova）：用 InAppBrowser 调起系统浏览器
+	try {
+		const win = typeof window !== "undefined" ? window : null;
+		const cordova = win && win.cordova;
+		if (cordova) {
+			const inAppBrowser = cordova.InAppBrowser || (cordova.plugins && cordova.plugins.inAppBrowser);
+			if (inAppBrowser && typeof inAppBrowser.open === "function") {
+				inAppBrowser.open(url, "_system");
+				return true;
+			}
+		}
+	} catch (e) {}
 	const req = getRequire();
 	if (req) {
 		// 无名杀主进程已初始化并启用了 @electron/remote
@@ -64,6 +76,30 @@ export function openExternal(url) {
 		return true;
 	} catch (e) {}
 	return false;
+}
+
+/** 是否运行在安卓/iOS 客户端（Cordova）里 */
+export function isCordova() {
+	try {
+		return !!(typeof window !== "undefined" && window.cordova);
+	} catch (e) {
+		return false;
+	}
+}
+
+/** 是否运行在桌面端（Electron，且启用了 @electron/remote） */
+export function isDesktop() {
+	const req = getRequire();
+	if (!req) {
+		return false;
+	}
+	try {
+		const remote = req("@electron/remote");
+		return !!(remote && remote.BrowserWindow);
+	} catch (e) {
+		// 安卓客户端的 cordova require 对未知模块会抛错，这里即视为非桌面端
+		return false;
+	}
 }
 
 /**

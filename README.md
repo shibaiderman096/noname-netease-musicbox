@@ -9,7 +9,7 @@
 > **打开游戏自动续播。** 默认开启「开机续播」：每次打开游戏都会自动接着上次的歌曲和进度继续播放。
 > **右下角悬浮小窗可拖动**，无操作几秒后会自动收成一张圆形唱片，点一下唱片就展开。
 
-- 版本：1.2.0
+- 版本：1.3.0
 - 目录：`<游戏目录>/resources/app/extension/网易云音乐盒/`
 - 依赖：无（weapi 加密、二维码生成均为扩展内自带的纯 JS 实现）
 
@@ -26,9 +26,18 @@
 
 ### 方式 B：导入压缩包
 
-1. 到 [Releases](https://github.com/shibaiderman096/noname-netease-musicbox/releases/latest) 下载 `noname-netease-musicbox-v1.2.0.zip`；
+1. 到 [Releases](https://github.com/shibaiderman096/noname-netease-musicbox/releases/latest) 下载 `noname-netease-musicbox-v1.3.0.zip`；
 2. 打开游戏 → `扩展` 菜单 → **导入扩展** → 选择该 zip；
 3. 提示导入成功后游戏会自动重启，扩展同时被启用。
+
+### 方式 C：安卓客户端
+
+1. 手机上直接下载（或从电脑传过去）`noname-netease-musicbox-v1.3.0.zip`；
+2. 在安卓客户端里用 **导入扩展** 选择该 zip —— 客户端会提示「扩展已导入成功，是否重启游戏」，确认即可；
+   也可以把 `网易云音乐盒` 文件夹整个拷贝到客户端的扩展目录里（不同客户端路径略有差异，通常是 `Android/data/<客户端包名>/files/extension/`）。
+3. 重启后进入 `扩展` 菜单，把 **网易云音乐盒 → 开启** 打开。
+
+> 安卓端不需要任何额外配置：扩展会自动识别客户端的原生网络通道（见「九、安卓端说明」）。
 
 > 提示：扩展页面的选项保存在 `lib.config` 里（键名前缀 `extension_网易云音乐盒_`），删除扩展目录即可完全清理。
 
@@ -127,6 +136,9 @@
 **10. 右下角小窗不见了 / 变成一张圆盘？**
 小窗无操作几秒会主动收成圆盘（防止挡住对局）；点一下圆盘就展开，扩展页面把 **小窗自动收起** 改成 0 可以让它一直保持完整小窗。另外面板打开时小窗会暂时隐藏。
 
+**11. 安卓端提示「Failed to fetch」/ 一直转圈？**
+见下方「九、安卓端说明」——v1.3.0 起已内置安卓原生网络通道，直接用新版即可；如果你是从旧版升级，请重新导入一次 zip 并重启。
+
 ---
 
 ## 六、相关链接
@@ -153,9 +165,10 @@
     ├── ui.js           播放面板、登录界面、右下角小窗/圆形唱片（DOM + 交互）
     ├── player.js       播放内核（歌单、模式、音质、双输出后端、跨重载与跨会话续播）
     ├── audio-sink.js   音频输出窗口的逻辑（只负责播放给定 URL，并在游戏关闭时自毁）
+    ├── net.js          网络层（桌面 Node / 安卓原生 HTTP / FileTransfer / fetch 四套后端）
+    ├── update.js       版本检查（对比 GitHub 最新 Release）
     ├── api.js          网易云接口封装（账号/歌单/搜索/播放地址/扫码）
     ├── crypto.js       weapi 加密（AES-128-CBC + RSA，纯 JS）
-    ├── net.js          网络请求（Node https 优先，fetch 兜底）
     ├── qrcode.js       二维码生成（纯 JS，字节模式 版本1~10 纠错L/M）
     ├── store.js        配置与会话持久化（lib.config）
     ├── style.js        面板样式（nmb- 前缀，避免与游戏样式冲突）
@@ -173,7 +186,32 @@
 
 ---
 
-## 九、说明
+## 九、安卓端说明
+
+安卓客户端是 Cordova/WebView 环境，而 `music.163.com` **不返回 CORS 头**，所以 WebView 里直接用 `fetch` 一定会失败（就是你看到的 `Failed to fetch`）。v1.3.0 起扩展内置了四套网络后端，会自动挑选可用的那一套：
+
+| 后端 | 使用场景 | 特点 |
+| --- | --- | --- |
+| `node` | 桌面端（Electron） | 不受 CORS 限制，能读 `Set-Cookie`（扫码登录靠它） |
+| `cordova-http` | 安卓客户端装了 `cordova-plugin-advanced-http` | 原生请求，可自定义任意请求头，能读响应头 |
+| `file-transfer` | 安卓客户端（`cordova-plugin-file-transfer`） | POST 走原生「上传」、GET 走原生「下载」，同样绕开 CORS |
+| `fetch` | 网页版兜底 | 会被跨域拦下（music.163.com 没有 CORS 头） |
+
+配套做的三件事：
+1. **参数改放查询串**：网易云不接受 GET 传参，但接受把 `params`/`encSecKey` 放在 URL 上的 POST（实测 multipart / urlencoded / 文本 / 空 body 全部返回 200），这样安卓的原生上传通道也能调接口；
+2. **播放直链统一升级为 https**：安卓上 https 页面加载 http 音频会被拦，实测同一地址换 https 一样可播（206 + audio/mpeg）；
+3. **外部浏览器改用 InAppBrowser**：安卓端「打开浏览器登录」会调起系统浏览器（`cordova.InAppBrowser.open(url, "_system")`）。
+
+在音乐盒 → **账号与登录** 的顶部能看到当前实际使用的网络通道。
+
+安卓端的已知限制：
+- 如果客户端只有 `file-transfer`（读不到响应头），**扫码登录无法自动同步登录状态**——界面会提示你改用「浏览器登录 + 手动粘贴 Cookie」；
+- 如果客户端两个原生插件都没有，会退回 `fetch` 并失败，此时需要换用其它客户端或客户端版本；
+- 「弹出登录窗口自动同步」「重新开始不断歌」「关闭游戏自动退出音频窗口」这些依赖 Electron 的能力在安卓上不可用（会自动跳过，不影响播放）。
+
+---
+
+## 十、说明
 
 本扩展只调用网易云音乐官方公开接口（`music.163.com/weapi`），不上传任何数据；登录状态（Cookie）只保存在你本机的无名杀配置里。
 

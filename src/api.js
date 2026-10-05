@@ -76,11 +76,15 @@ function buildHeaders() {
 /** 发送 weapi 请求，返回原始响应 */
 async function weapiRaw(path, params = {}) {
 	const payload = weapi({ ...params, csrf_token: csrfToken });
+	const body = `params=${encodeURIComponent(payload.params)}&encSecKey=${encodeURIComponent(payload.encSecKey)}`;
+	// 参数同时放在查询串和 body 里：安卓客户端用原生「上传」通道时 body 只能是 multipart 占位文件，
+	// 而服务端在查询串里同样能读到 params/encSecKey（各 body 形态实测均返回 200）。
+	const query = `${body}&csrf_token=${encodeURIComponent(csrfToken)}`;
 	const response = await request({
-		url: `${BASE_URL}${path}${path.includes("?") ? "&" : "?"}csrf_token=${encodeURIComponent(csrfToken)}`,
+		url: `${BASE_URL}${path}${path.includes("?") ? "&" : "?"}${query}`,
 		method: "POST",
 		headers: buildHeaders(),
-		body: `params=${encodeURIComponent(payload.params)}&encSecKey=${encodeURIComponent(payload.encSecKey)}`,
+		body,
 	});
 	absorbCookies(response.headers);
 	let json;
@@ -201,11 +205,11 @@ export async function fetchPlaylistDetail(id) {
 	return { info: normalizePlaylist(playlist), tracks };
 }
 
-/** 批量获取歌曲信息（每批 300 首） */
+/** 批量获取歌曲信息（每批 80 首：参数要放进查询串，避免 URL 过长） */
 export async function fetchSongs(ids) {
 	const result = [];
-	for (let i = 0; i < ids.length; i += 300) {
-		const chunk = ids.slice(i, i + 300);
+	for (let i = 0; i < ids.length; i += 80) {
+		const chunk = ids.slice(i, i + 80);
 		const json = await weapiPost("/weapi/v3/song/detail", {
 			c: JSON.stringify(chunk.map(id => ({ id }))),
 			ids: JSON.stringify(chunk),
@@ -289,7 +293,9 @@ export async function fetchSongUrl(id, quality = "exhigh") {
 		const data = json.data && json.data[0];
 		if (data && data.url && data.code === 200) {
 			return {
-				url: data.url,
+				// 网易云返回的直链是 http，安卓 WebView 里 https 页面加载 http 媒体会被拦，
+				// 实测同一地址换成 https 一样可播（206 + audio/mpeg），所以统一升级成 https。
+				url: String(data.url).replace(/^http:/i, "https:"),
 				br: data.br || 128000,
 				size: data.size || 0,
 				fee: data.fee ?? 0,

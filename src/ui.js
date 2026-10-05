@@ -10,7 +10,8 @@ import { session, readConfig, writeConfig, viewState } from "./store.js";
 import { Player, MODE_LABELS, hasRunningOutput, readPlaybackRecord } from "./player.js";
 import { MUSIC_BOX_CSS } from "./style.js";
 import { qrEncode } from "./qrcode.js";
-import { EXT_NAME, LOGIN_URL, openExternal, escapeHtml, formatTime, formatCount, parsePlaylistId, getRequire, clamp } from "./util.js";
+import { EXT_NAME, LOGIN_URL, openExternal, escapeHtml, formatTime, formatCount, parsePlaylistId, getRequire, clamp, isDesktop } from "./util.js";
+import { backendLabel, canReadResponseHeaders } from "./net.js";
 
 let installed = false;
 let player = null;
@@ -1324,11 +1325,15 @@ async function ensureProfile() {
 
 /** 渲染登录界面 */
 function renderLogin() {
+	const backend = backendLabel();
+	const headersOk = canReadResponseHeaders();
+	const desktop = isDesktop();
 	dom.list.innerHTML = `
 	<div class="nmb-login">
 		<div class="nmb-block">
 			<h4>当前状态</h4>
 			<div>${session.cookie ? (session.nickname ? `已登录：<b>${escapeHtml(session.nickname)}</b>（UID ${escapeHtml(session.uid)}）` : "已保存登录信息，正在读取账号…") : "未登录（仍可浏览推荐歌单、排行榜，以及播放免费歌曲）"}</div>
+			<div class="nmb-hint">网络通道：${escapeHtml(backend)}${headersOk ? "" : "（该通道读不到响应头，扫码登录可能无法自动同步）"}</div>
 			<div class="nmb-row">
 				<button class="nmb-btn nmb-primary" data-login="refresh">刷新账号信息</button>
 				<button class="nmb-btn" data-login="logout">退出登录</button>
@@ -1336,24 +1341,28 @@ function renderLogin() {
 		</div>
 
 		<div class="nmb-block">
-			<h4>方式一：调用系统浏览器登录</h4>
-			<div>点击下面的按钮会用系统默认浏览器打开网易云登录页，登录完成后回到这里用「方式三」粘贴 Cookie 即可同步账号。</div>
+			<h4>方式一：调用系统浏览器登录${desktop ? "" : "（推荐）"}</h4>
+			<div>点击下面的按钮会用系统浏览器打开网易云登录页，登录完成后回到这里用「方式四」粘贴 Cookie 即可同步账号。</div>
 			<div class="nmb-row">
 				<button class="nmb-btn nmb-primary" data-login="browser">🌐 打开浏览器登录网易云</button>
 			</div>
 		</div>
-
+		${
+			desktop
+				? `
 		<div class="nmb-block">
-			<h4>方式二：弹出登录窗口（自动同步，推荐）</h4>
+			<h4>方式二：弹出登录窗口（自动同步）</h4>
 			<div>在弹出的窗口里登录网易云，登录成功后音乐盒会自动读取登录状态，无需手动复制 Cookie。</div>
 			<div class="nmb-row">
 				<button class="nmb-btn nmb-primary" data-login="window">🪟 弹出登录窗口并自动同步</button>
 			</div>
 			<div class="nmb-hint">该窗口使用独立的浏览器会话，Cookies 保存在无名杀目录中，不会影响你的系统浏览器。</div>
-		</div>
+		</div>`
+				: ""
+		}
 
 		<div class="nmb-block">
-			<h4>方式三：扫码登录</h4>
+			<h4>方式${desktop ? "三" : "二"}：扫码登录</h4>
 			<div>用手机上的「网易云音乐」App 扫描下方二维码即可登录。</div>
 			<div class="nmb-row">
 				<button class="nmb-btn nmb-primary" data-login="qr">📱 生成登录二维码</button>
@@ -1362,10 +1371,11 @@ function renderLogin() {
 				<canvas id="nmb-qr-canvas" width="168" height="168"></canvas>
 				<div class="nmb-qrstatus" id="nmb-qr-status">等待生成…</div>
 			</div>
+			${headersOk ? "" : '<div class="nmb-hint">提示：当前网络通道无法读取登录响应头，扫码确认后若没有自动登录，请改用「方式一 + 方式四（粘贴 Cookie）」。</div>'}
 		</div>
 
 		<div class="nmb-block">
-			<h4>方式四：手动粘贴 Cookie</h4>
+			<h4>方式${desktop ? "四" : "三"}：手动粘贴 Cookie</h4>
 			<textarea class="nmb-input" id="nmb-cookie-input" placeholder="粘贴完整的 Cookie，或只粘贴 MUSIC_U 的值">${escapeAttr(session.cookie)}</textarea>
 			<div class="nmb-row">
 				<button class="nmb-btn nmb-primary" data-login="save-cookie">保存并验证</button>
@@ -1594,8 +1604,14 @@ async function pollQr() {
 			setQrStatus("已扫码，请在手机上确认登录");
 		} else if (result.code === 803) {
 			stopQrPolling();
-			setQrStatus("登录成功！");
 			session.cookie = api.getCookie();
+			if (!/MUSIC_U=/.test(session.cookie)) {
+				// 安卓的 FileTransfer 通道读不到响应头，拿不到登录凭据
+				setQrStatus("扫码已确认，但当前网络通道读不到登录凭据：请改用「方式一：浏览器登录」+「手动粘贴 Cookie」");
+				toast("扫码成功但无法自动同步登录状态，请改用浏览器登录 + 粘贴 Cookie", 4600);
+				return;
+			}
+			setQrStatus("登录成功！");
 			await refreshAccount(false);
 			if (state.view === "login") {
 				renderLogin();
