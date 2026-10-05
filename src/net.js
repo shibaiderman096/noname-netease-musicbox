@@ -462,12 +462,13 @@ function fileTransferRequest(options) {
 						const detail = (error && (error.body || error.exception || error.code)) || "网络请求失败";
 						reject(new Error(`${detail}（目标路径：${target}）`));
 					};
-					const done = async entry => {
-						try {
-							resolve({ status: 200, headers: {}, text: await readTempFile(entry), buffer: null });
-						} catch (e) {
-							reject(e);
-						}
+					// 注意：绝不能把 async 函数交给 Cordova 当回调，
+					// 否则 argscheck 会报：Expected Function, but got AsyncFunction
+					const done = entry => {
+						readTempFile(entry).then(
+							text => resolve({ status: 200, headers: {}, text, buffer: null }),
+							reject
+						);
 					};
 					let fileTransfer;
 					try {
@@ -476,16 +477,18 @@ function fileTransferRequest(options) {
 						reject(new Error(`无法创建 FileTransfer：${(e && e.message) || e}`));
 						return;
 					}
-					// 和 game.download 一致：source / target 都 encodeURI。
+					// 和 game.download 一致：文件路径要 encodeURI（可能含空格），
+					// 但请求 URL 绝不能 encodeURI —— 接口参数已经 %XX 编码过，
+					// encodeURI 会把 %2B 变成 %252B 导致服务端解密失败。
 					// options 只在真的需要（带 Cookie）时才传：部分客户端的 file-transfer
 					// 收到 options 会在 Java 端抛 NullPointerException（已实测到）。
 					const headers = options.headers || {};
 					const needCookie = Object.keys(headers).some(key => key.toLowerCase() === "cookie");
 					try {
 						if (needCookie) {
-							fileTransfer.download(encodeURI(options.url), target, done, fail, false, { headers });
+							fileTransfer.download(options.url, target, done, fail, false, { headers });
 						} else {
-							fileTransfer.download(encodeURI(options.url), target, done, fail);
+							fileTransfer.download(options.url, target, done, fail);
 						}
 					} catch (e) {
 						reject(new Error(`FileTransfer 下载异常：${(e && e.message) || e}`));
@@ -517,7 +520,7 @@ function fileTransferRequest(options) {
 				try {
 					fileTransfer.upload(
 						encodeURI(path),
-						encodeURI(options.url),
+						options.url,
 						result => {
 							resolve({
 								status: (result && result.responseCode) || 200,
@@ -698,7 +701,7 @@ export async function diagnose() {
 	const lines = [];
 	const push = (key, value) => lines.push(`${key}: ${value}`);
 
-	push("扩展版本", "1.4.1"); // 与 extension.js 的 VERSION / info.json 保持一致
+	push("扩展版本", "1.4.2"); // 与 extension.js 的 VERSION / info.json 保持一致
 	push("时间", new Date().toLocaleString());
 	push("UA", (typeof navigator !== "undefined" && navigator.userAgent) || "?");
 	push("页面地址", (win && win.location && win.location.href) || "?");

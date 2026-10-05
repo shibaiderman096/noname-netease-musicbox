@@ -9,7 +9,7 @@
 > **打开游戏自动续播。** 默认开启「开机续播」：每次打开游戏都会自动接着上次的歌曲和进度继续播放。
 > **右下角悬浮小窗可拖动**，无操作几秒后会自动收成一张圆形唱片，点一下唱片就展开。
 
-- 版本：1.4.1
+- 版本：1.4.2
 - 目录：`<游戏目录>/resources/app/extension/网易云音乐盒/`
 - 依赖：无（weapi 加密、二维码生成均为扩展内自带的纯 JS 实现）
 
@@ -26,13 +26,13 @@
 
 ### 方式 B：导入压缩包
 
-1. 到 [Releases](https://github.com/shibaiderman096/noname-netease-musicbox/releases/latest) 下载 `noname-netease-musicbox-v1.4.1.zip`；
+1. 到 [Releases](https://github.com/shibaiderman096/noname-netease-musicbox/releases/latest) 下载 `noname-netease-musicbox-v1.4.2.zip`；
 2. 打开游戏 → `扩展` 菜单 → **导入扩展** → 选择该 zip；
 3. 提示导入成功后游戏会自动重启，扩展同时被启用。
 
 ### 方式 C：安卓客户端
 
-1. 手机上直接下载（或从电脑传过去）`noname-netease-musicbox-v1.4.1.zip`；
+1. 手机上直接下载（或从电脑传过去）`noname-netease-musicbox-v1.4.2.zip`；
 2. 在安卓客户端里用 **导入扩展** 选择该 zip —— 客户端会提示「扩展已导入成功，是否重启游戏」，确认即可；
    也可以把 `网易云音乐盒` 文件夹整个拷贝到客户端的扩展目录里（不同客户端路径略有差异，通常是 `Android/data/<客户端包名>/files/extension/`）。
 3. 重启后进入 `扩展` 菜单，把 **网易云音乐盒 → 开启** 打开。
@@ -223,7 +223,7 @@
 
 1. 改好代码，把 `extension.js` 的 `VERSION`、`info.json` 的 `version`、README 里的版本号改一致；
 2. 在 GitHub 网页上 **Releases → Draft a new release**，新建 tag（例如 `v1.4.0`）并发布（或者到 **Actions → Release → Run workflow** 手动填版本号）；
-3. 工作流会：校验 `info.json` / `extension.js` 的版本与 tag 一致 → 打包 `noname-netease-musicbox-v1.4.1.zip`（排除 `.github`、`dist` 等）→ 校验压缩包内文件齐全 → 创建/更新 Release 并附上 zip。
+3. 工作流会：校验 `info.json` / `extension.js` 的版本与 tag 一致 → 打包 `noname-netease-musicbox-v1.4.2.zip`（排除 `.github`、`dist` 等）→ 校验压缩包内文件齐全 → 创建/更新 Release 并附上 zip。
 
 版本号不一致时工作流会直接失败并提示，避免发出版本对不上的包。
 

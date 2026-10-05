@@ -18,7 +18,7 @@ import { checkUpdate, REPO_URL } from "./src/update.js";
 export const type = "extension";
 
 /** 当前版本（与 info.json 保持一致） */
-const VERSION = "1.4.1";
+const VERSION = "1.4.2";
 
 export default async function () {
 	const config = {
