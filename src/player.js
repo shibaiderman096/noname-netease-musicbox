@@ -1,18 +1,15 @@
 /**
  * 网易云音乐盒 - 播放器内核
  *
- * 音频有三种输出方式：
- *   1. sink  —— 桌面端：Electron 隐藏窗口（player.html），游戏「重新开始」重载页面时音乐不中断
- *   2. iab   —— 安卓端：Cordova InAppBrowser 独立 WebView（同一个 player.html），
- *               通过同源 localStorage 收发命令/状态，同样能在页面重载时不断歌
- *   3. local —— 当前页面的 Audio 元素，兜底（重载会中断，但会记录进度并续播）
+ * 音频有两种输出方式：
+ *   1. sink  —— 独立的隐藏窗口（player.html），游戏「重新开始」重载页面时音乐不中断（推荐）
+ *   2. local —— 当前页面的 Audio 元素，在没有 Electron remote 能力时兜底
  *
  * 歌单、下一首、播放地址解析等逻辑始终在游戏页面里；页面重载后从 localStorage
- * 恢复状态并重新接管音频窗口，因此听感上是连续的。
+ * 恢复状态并重新接管 sink 窗口，因此听感上是连续的。
  */
-import { Emitter, clamp, getRequire, isDesktop, EXT_NAME } from "./util.js";
+import { Emitter, clamp, getRequire, EXT_NAME } from "./util.js";
 import * as api from "./api.js";
-import { STATE_KEY, CMD_KEY, BEAT_KEY, BEAT_TIMEOUT_MS, sinkUrl, readSinkState, isSinkAlive, sendCommand, beat, clearChannel, clearState, clearCommand, resetCommand } from "./sink-channel.js";
 
 export const PLAY_MODES = ["order", "loop", "single", "shuffle"];
 export const MODE_LABELS = {
@@ -51,13 +48,6 @@ export function clearPlaybackRecord() {
 
 /** 是否已经有正在运行的音频输出窗口（页面重载后据此决定要不要接管界面） */
 export function hasRunningOutput() {
-	// 安卓：InAppBrowser 音频窗口通过 localStorage 上报状态
-	if (isSinkAlive()) {
-		return true;
-	}
-	if (!isDesktop()) {
-		return false;
-	}
 	const req = getRequire();
 	if (!req) {
 		return false;
@@ -78,25 +68,6 @@ export function hasRunningOutput() {
 	return false;
 }
 
-/** 安卓端可用的 InAppBrowser（用来开独立音频窗口） */
-function getInAppBrowser() {
-	const win = typeof window !== "undefined" ? window : null;
-	const cordova = win && win.cordova;
-	if (!cordova) {
-		return null;
-	}
-	const iab = cordova.InAppBrowser || (cordova.plugins && cordova.plugins.inAppBrowser);
-	return iab && typeof iab.open === "function" ? iab : null;
-}
-
-/** 安卓端是否具备「独立音频窗口」能力（桌面端走 Electron 那套） */
-export function hasWindowSink() {
-	if (isDesktop()) {
-		return true;
-	}
-	return !!getInAppBrowser();
-}
-
 export class Player extends Emitter {
 	constructor(options = {}) {
 		super();
@@ -115,11 +86,9 @@ export class Player extends Emitter {
 		this.requestToken = 0;
 		this.bgmPaused = false;
 
-		/** "sink"（桌面窗口）| "iab"（安卓 InAppBrowser 窗口）| "local" | null（尚未决定） */
+		/** "sink" | "local" | null（null 表示尚未决定，首次播放时再判断） */
 		this.output = null;
 		this.sink = null;
-		/** 安卓 InAppBrowser 音频窗口的引用（页面重载后会丢失，靠 localStorage 通道继续控制） */
-		this.iab = null;
 		this.sinkFailed = false;
 		this.audio = new Audio();
 		this.audio.preload = "none";
@@ -141,7 +110,7 @@ export class Player extends Emitter {
 
 		this._bindLocalAudio();
 		this._restoreState();
-		this._attachExistingOutput();
+		this._attachExistingSink();
 	}
 
 	/* ------------------------------------------------------------------ *
@@ -258,261 +227,18 @@ export class Player extends Emitter {
 		return null;
 	}
 
-	/* ------------------------------------------------------------------ *
-	 * 安卓：InAppBrowser 音频窗口（通过 localStorage 通道收发）
-	 * ------------------------------------------------------------------ */
-
-	/** 打开 InAppBrowser 音频窗口，并等它上报第一次状态 */
-	async _createIabSink() {
-		const iab = getInAppBrowser();
-		if (!iab) {
-			return false;
-		}
-		if (this.iab) {
-			return true;
-		}
-		try {
-			beat();
-			// 清掉可能残留的旧命令（例如上一次的 close），避免新窗口一起来就自己关掉
-			resetCommand();
-			this.iab = iab.open(
-				sinkUrl(),
-				"_blank",
-				"location=no,hidden=yes,clearcache=no,clearsessioncache=no,zoom=no,mediaPlaybackRequiresUserGesture=no"
-			);
-		} catch (e) {
-			console.warn(`[${EXT_NAME}] 打开安卓音频窗口失败`, e);
-			this.iab = null;
-			return false;
-		}
-		// 等音频窗口上报第一次状态（说明页面加载成功、通道可用）
-		for (let i = 0; i < 40; i++) {
-			await new Promise(resolve => setTimeout(resolve, 150));
-			beat();
-			if (isSinkAlive()) {
-				return true;
-			}
-		}
-		// 起不来就把它关掉，别留一个空白窗口
-		try {
-			if (this.iab && typeof this.iab.close === "function") {
-				this.iab.close();
-			}
-		} catch (e) {}
-		this.iab = null;
-		clearChannel();
-		return false;
-	}
-
-	/**
-	 * 音频窗口虽然开着但音频不动（部分客户端里隐藏 WebView 会被暂停）时，
-	 * 退回页面内播放，避免"看起来在播其实没声音"。
-	 */
-	async _iabFallback(reason) {
-		if (this.output !== "iab") {
-			return;
-		}
-		const resumeAt = this.currentTime / 1000;
-		this._stopPolling();
-		try {
-			sendCommand("close");
-			clearState();
-			const timer = setTimeout(() => clearCommand(), 5000);
-			if (timer && typeof timer.unref === "function") {
-				timer.unref();
-			}
-		} catch (e) {}
-		this.iab = null;
-		this.output = null;
-		this.sinkFailed = true;
-		this.emit("error", new Error(reason || "音频窗口无法后台播放，已改用页面内播放（重开会中断）"));
-		const index = this.index;
-		if (index >= 0 && this.tracks.length) {
-			await this.playIndex(index, { startAt: resumeAt > 3 ? resumeAt : 0 }).catch(() => {});
-		}
-	}
-
-	/** 安卓音频窗口是否卡住（播放中但进度一直不走） */
-	_checkIabStall(state) {
-		if (this.output !== "iab") {
-			return;
-		}
-		if (state.paused || !state.hasSrc || state.ended) {
-			this._iabLastTime = undefined;
-			this._iabStallSince = 0;
-			return;
-		}
-		// 还没真正开始播（还在缓冲/加载）时不判定卡住
-		const ready = (Number(state.readyState) || 0) >= 2 || (Number(state.duration) || 0) > 0;
-		if (!ready) {
-			this._iabLastTime = undefined;
-			this._iabStallSince = 0;
-			return;
-		}
-		const time = Number(state.currentTime) || 0;
-		if (this._iabLastTime === undefined || time > this._iabLastTime + 0.05) {
-			this._iabLastTime = time;
-			this._iabStallSince = 0;
-			return;
-		}
-		if (!this._iabStallSince) {
-			this._iabStallSince = Date.now();
-			return;
-		}
-		if (Date.now() - this._iabStallSince > 8000) {
-			this._iabStallSince = 0;
-			this._iabFallback("音频窗口无法后台播放（进度没有前进），已改用页面内播放");
-		}
-	}
-
-	/** 接管已经在运行的音频窗口（页面重载后走这条） */
-	_attachExistingOutput() {
-		// 桌面端：Electron 窗口
-		if (this._attachExistingSink()) {
-			return true;
-		}
-		// 安卓端：InAppBrowser 窗口（状态够新就认为它还在播）
-		if (isSinkAlive()) {
-			this.output = "iab";
-			this.state = readSinkState() || this.state;
-			this._startPolling();
-			return true;
-		}
-		return false;
-	}
-
-	/** 当前输出是不是"独立窗口"（桌面 sink 或安卓 iab） */
-	_isWindowOutput() {
-		return this.output === "sink" || this.output === "iab";
-	}
-
-	/* ------------------------------------------------------------------ *
-	 * 输出操作（统一入口，桌面/安卓/本地各走各的）
-	 * ------------------------------------------------------------------ */
-
-	async _outLoad(url, autoplay, meta) {
-		if (this.output === "iab") {
-			this._iabLastTime = undefined;
-			this._iabStallSince = 0;
-			sendCommand("load", { url, autoplay: autoplay !== false, volume: this.volume, seconds: 0, meta: meta || this._currentMeta() });
-			return { ok: true };
-		}
-		if (this.output === "sink") {
-			return await this._sinkEval(`NMBSink.load(${JSON.stringify(url)}, ${autoplay !== false}, ${JSON.stringify(meta || this._currentMeta())})`);
-		}
-		this.audio.src = url;
-		if (autoplay === false) {
-			return { ok: true };
-		}
-		try {
-			await this.audio.play();
-			return { ok: true };
-		} catch (e) {
-			return { ok: false, error: String((e && e.message) || e) };
-		}
-	}
-
-	async _outPlay() {
-		if (this.output === "iab") {
-			sendCommand("play");
-			return;
-		}
-		if (this.output === "sink") {
-			await this._sinkEval("NMBSink.play()").catch(() => {});
-			return;
-		}
-		try {
-			await this.audio.play();
-		} catch (e) {
-			this.emit("error", e);
-		}
-	}
-
-	async _outPause() {
-		if (this.output === "iab") {
-			sendCommand("pause");
-			return;
-		}
-		if (this.output === "sink") {
-			await this._sinkEval("NMBSink.pause()").catch(() => {});
-			return;
-		}
-		this.audio.pause();
-	}
-
-	async _outStop() {
-		if (this.output === "iab") {
-			sendCommand("stop");
-			return;
-		}
-		if (this.output === "sink") {
-			await this._sinkEval("NMBSink.stop()").catch(() => {});
-		}
-	}
-
-	async _outSeek(seconds) {
-		if (this.output === "iab") {
-			sendCommand("seek", { seconds });
-			return;
-		}
-		if (this.output === "sink") {
-			await this._sinkEval(`NMBSink.seek(${seconds})`).catch(() => {});
-			return;
-		}
-		try {
-			this.audio.currentTime = seconds;
-		} catch (e) {}
-	}
-
-	_outVolume(volume) {
-		if (this.output === "iab") {
-			sendCommand("volume", { volume });
-			return;
-		}
-		if (this.output === "sink") {
-			this._sinkEval(`NMBSink.volume(${volume})`).catch(() => {});
-		}
-	}
-
-	/** 音频窗口上报的状态（iab 用 localStorage，sink 用 executeJavaScript） */
-	async _outState() {
-		if (this.output === "iab") {
-			return readSinkState();
-		}
-		if (this.output === "sink") {
-			return await this._sinkEval("NMBSink.state()");
-		}
-		return null;
-	}
-
-	/** 当前曲目信息（随 load 命令带到音频窗口，页面重载后据此恢复界面） */
-	_currentMeta() {
-		const track = this.current;
-		return {
-			id: track ? track.id : "",
-			name: track ? track.name : "",
-			artist: track ? track.artist : "",
-			cover: track ? track.cover : "",
-			index: this.index,
-			mode: this.mode,
-			title: this.playlistTitle,
-			playlistId: this.playlistId,
-		};
-	}
-
 	/** 决定使用哪种输出方式（首次播放时调用） */
 	async _ensureOutput() {
-		if (this._isWindowOutput() && this._outputAlive()) {
-			return this.output;
+		if (this.output === "sink" && this.sink && !this.sink.isDestroyed()) {
+			return "sink";
 		}
-		if (this._isWindowOutput()) {
+		if (this.output === "sink") {
 			this._sinkLost();
 		}
 		if (this.sinkFailed) {
 			this.output = "local";
 			return "local";
 		}
-		// 桌面端：Electron 隐藏窗口
 		const sink = await this._createSink();
 		if (sink) {
 			this.sink = sink;
@@ -521,27 +247,9 @@ export class Player extends Emitter {
 			await this._sinkEval(`NMBSink.volume(${this.volume})`).catch(() => {});
 			return "sink";
 		}
-		// 安卓端：InAppBrowser 独立 WebView（同源 localStorage 通道）
-		if (await this._createIabSink()) {
-			this.output = "iab";
-			this._startPolling();
-			sendCommand("volume", { volume: this.volume });
-			return "iab";
-		}
 		this.sinkFailed = true;
 		this.output = "local";
 		return "local";
-	}
-
-	/** 当前窗口输出是否还活着 */
-	_outputAlive() {
-		if (this.output === "sink") {
-			return !!(this.sink && !this.sink.isDestroyed());
-		}
-		if (this.output === "iab") {
-			return isSinkAlive();
-		}
-		return false;
 	}
 
 	_sinkLost() {
@@ -587,44 +295,22 @@ export class Player extends Emitter {
 
 	/** 立即同步一次状态（界面初始化时用） */
 	async refresh() {
-		if (this._isWindowOutput()) {
+		if (this.output === "sink") {
 			await this._poll().catch(() => {});
 		}
 		return this.state;
 	}
 
 	async _poll() {
-		if (!this._isWindowOutput()) {
+		if (this.output !== "sink" || !this.sink) {
 			return;
 		}
-		if (this.output === "iab") {
-			beat();
-		}
-		const state = await this._outState();
+		const state = await this._sinkEval("NMBSink.state()");
 		if (!state || typeof state !== "object") {
-			if (this.output === "iab" && !isSinkAlive()) {
-				// 音频窗口没了（被系统回收/自己退出），退回本地播放
-				this._sinkLost();
-				this.output = "local";
-			}
 			return;
 		}
-		this._applyState(state);
-	}
-
-	/** 处理一次状态更新（sink 与 iab 共用） */
-	_applyState(state) {
 		const previous = this.state;
 		this.state = state;
-		// 音频窗口上报的曲目信息：页面重载后据此恢复当前歌曲
-		if (this.output === "iab" && state.meta && (!this.current || this.current.id !== state.meta.id)) {
-			const meta = state.meta;
-			const index = Number.isInteger(meta.index) && meta.index >= 0 && meta.index < this.tracks.length ? meta.index : this.index;
-			if (this.tracks.length) {
-				this.index = index;
-				this.emit("track", this.current);
-			}
-		}
 
 		if (state.error && state.error !== previous.error) {
 			this._resumeGameBgm();
@@ -657,7 +343,6 @@ export class Player extends Emitter {
 		if (!state.paused) {
 			this._keepGameBgmPaused();
 		}
-		this._checkIabStall(state);
 	}
 
 	_bindLocalAudio() {
@@ -820,25 +505,25 @@ export class Player extends Emitter {
 	}
 
 	get hasSource() {
-		return this._isWindowOutput() ? !!this.state.hasSrc : !!this.audio.src;
+		return this.output === "sink" ? !!this.state.hasSrc : !!this.audio.src;
 	}
 
 	get playing() {
-		if (this._isWindowOutput()) {
+		if (this.output === "sink") {
 			return !!this.state.hasSrc && !this.state.paused && !this.state.ended;
 		}
 		return !!this.audio.src && !this.audio.paused && !this.audio.ended;
 	}
 
 	get duration() {
-		if (this._isWindowOutput()) {
+		if (this.output === "sink") {
 			return (this.state.duration || 0) * 1000;
 		}
 		return (this.audio.duration || 0) * 1000;
 	}
 
 	get currentTime() {
-		if (this._isWindowOutput()) {
+		if (this.output === "sink") {
 			return (this.state.currentTime || 0) * 1000;
 		}
 		return this.audio.currentTime * 1000;
@@ -917,8 +602,8 @@ export class Player extends Emitter {
 			return;
 		}
 		this.state.currentTime = target;
-		if (this._isWindowOutput()) {
-			await this._outSeek(target);
+		if (this.output === "sink") {
+			await this._sinkEval(`NMBSink.seek(${target})`).catch(() => {});
 			return;
 		}
 		try {
@@ -950,8 +635,8 @@ export class Player extends Emitter {
 	}
 
 	async _loadUrl(url) {
-		if (this._isWindowOutput()) {
-			return await this._outLoad(url, true, this._currentMeta());
+		if (this.output === "sink") {
+			return await this._sinkEval(`NMBSink.load(${JSON.stringify(url)}, true)`);
 		}
 		this.audio.src = url;
 		try {
@@ -981,8 +666,8 @@ export class Player extends Emitter {
 		this.emit("pause");
 		this._resumeGameBgm();
 		this._saveState(true);
-		if (this._isWindowOutput()) {
-			await this._outPause();
+		if (this.output === "sink") {
+			await this._sinkEval("NMBSink.pause()").catch(() => {});
 			return;
 		}
 		this.audio.pause();
@@ -992,8 +677,8 @@ export class Player extends Emitter {
 		this.state.paused = false;
 		this.emit("play");
 		this._pauseGameBgm();
-		if (this._isWindowOutput()) {
-			await this._outPlay();
+		if (this.output === "sink") {
+			await this._sinkEval("NMBSink.play()").catch(() => {});
 			return;
 		}
 		try {
@@ -1015,8 +700,8 @@ export class Player extends Emitter {
 		try {
 			this.audio.load();
 		} catch (e) {}
-		if (this._isWindowOutput()) {
-			await this._outStop();
+		if (this.output === "sink") {
+			await this._sinkEval("NMBSink.stop()").catch(() => {});
 		}
 		this.index = -1;
 		this.emit("track", null);
@@ -1078,8 +763,8 @@ export class Player extends Emitter {
 		}
 		const seconds = clamp(ratio, 0, 1) * (duration / 1000);
 		this.state.currentTime = seconds;
-		if (this._isWindowOutput()) {
-			await this._outSeek(seconds);
+		if (this.output === "sink") {
+			await this._sinkEval(`NMBSink.seek(${seconds})`).catch(() => {});
 			return;
 		}
 		try {
@@ -1092,8 +777,8 @@ export class Player extends Emitter {
 		this.volume = volume;
 		this.state.volume = volume;
 		this.audio.volume = volume;
-		if (this._isWindowOutput()) {
-			this._outVolume(volume);
+		if (this.output === "sink") {
+			this._sinkEval(`NMBSink.volume(${volume})`).catch(() => {});
 		}
 		this.emit("volume", volume);
 		return volume;
@@ -1139,26 +824,7 @@ export class Player extends Emitter {
 				this.sink.close();
 			}
 		} catch (e) {}
-		// 安卓：通知 InAppBrowser 音频窗口自己关闭，然后清掉通道数据
-		try {
-			if (this.output === "iab" || isSinkAlive()) {
-				sendCommand("close");
-				// 命令要留给音频窗口读（它每 700ms 轮询一次），所以只先清状态，
-				// 等它处理完再清命令，避免被新开的窗口读到旧的 close。
-				clearState();
-				const timer = setTimeout(() => clearCommand(), 5000);
-				if (timer && typeof timer.unref === "function") {
-					timer.unref();
-				}
-			} else {
-				clearChannel();
-			}
-			if (this.iab && typeof this.iab.close === "function") {
-				this.iab.close();
-			}
-		} catch (e) {}
 		this.sink = null;
-		this.iab = null;
 		this.output = null;
 	}
 
