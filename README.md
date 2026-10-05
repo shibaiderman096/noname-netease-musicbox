@@ -9,7 +9,7 @@
 > **打开游戏自动续播。** 默认开启「开机续播」：每次打开游戏都会自动接着上次的歌曲和进度继续播放。
 > **右下角悬浮小窗可拖动**，无操作几秒后会自动收成一张圆形唱片，点一下唱片就展开。
 
-- 版本：1.4.2
+- 版本：1.5.0
 - 目录：`<游戏目录>/resources/app/extension/网易云音乐盒/`
 - 依赖：无（weapi 加密、二维码生成均为扩展内自带的纯 JS 实现）
 
@@ -26,13 +26,13 @@
 
 ### 方式 B：导入压缩包
 
-1. 到 [Releases](https://github.com/shibaiderman096/noname-netease-musicbox/releases/latest) 下载 `noname-netease-musicbox-v1.4.2.zip`；
+1. 到 [Releases](https://github.com/shibaiderman096/noname-netease-musicbox/releases/latest) 下载 `noname-netease-musicbox-v1.5.0.zip`；
 2. 打开游戏 → `扩展` 菜单 → **导入扩展** → 选择该 zip；
 3. 提示导入成功后游戏会自动重启，扩展同时被启用。
 
 ### 方式 C：安卓客户端
 
-1. 手机上直接下载（或从电脑传过去）`noname-netease-musicbox-v1.4.2.zip`；
+1. 手机上直接下载（或从电脑传过去）`noname-netease-musicbox-v1.5.0.zip`；
 2. 在安卓客户端里用 **导入扩展** 选择该 zip —— 客户端会提示「扩展已导入成功，是否重启游戏」，确认即可；
    也可以把 `网易云音乐盒` 文件夹整个拷贝到客户端的扩展目录里（不同客户端路径略有差异，通常是 `Android/data/<客户端包名>/files/extension/`）。
 3. 重启后进入 `扩展` 菜单，把 **网易云音乐盒 → 开启** 打开。
@@ -81,7 +81,7 @@
   - 收起后的**圆形唱片**会显示当前专辑封面，播放时缓慢旋转，**点一下即可展开**回完整小窗，**并且可以拖动换位置**（刚拖完的 0.3 秒内点击会被忽略，避免手一松就误触）；
   - 面板打开时不会重复显示小窗，关掉面板它就会回来。
 - **打开游戏自动续播**：默认开启，进入游戏后自动接着上次的歌曲与播放进度继续播（可在扩展页面「开机续播」里关闭）。
-- **游戏内「重新开始 / 重来」不影响播放**：无名杀会重载整个页面，而音乐在一个独立的隐藏音频窗口里继续播放；重载完成后音乐盒会自动恢复右下角小窗、当前歌曲与整个歌单列表，直接接着用就行。
+- **游戏内「重新开始 / 重来」不影响播放**：无名杀会重载整个页面，音乐则在一个**独立的音频窗口**里继续播放——桌面端用 Electron 隐藏窗口，**安卓端用 InAppBrowser 隐藏 WebView**（同一个 player.html，两边通过同源 localStorage 收发命令/状态）；重载完成后音乐盒会自动恢复右下角小窗、当前歌曲与整个歌单列表，直接接着用就行。若客户端不允许隐藏 WebView 播放，会检测到并自动退回页面内播放（这时重开会中断，但会从上次进度续播）。
 - 「歌单 → 播放」的记录会保存在本机（`localStorage`），即使完整重启游戏，下次打开音乐盒或点播放也会沿用上一次的歌单。
 
 ---
@@ -165,7 +165,8 @@
 └── src/
     ├── ui.js           播放面板、登录界面、右下角小窗/圆形唱片（DOM + 交互）
     ├── player.js       播放内核（歌单、模式、音质、双输出后端、跨重载与跨会话续播）
-    ├── audio-sink.js   音频输出窗口的逻辑（只负责播放给定 URL，并在游戏关闭时自毁）
+    ├── audio-sink.js   音频输出窗口的逻辑（桌面 Electron / 安卓 InAppBrowser 两种宿主）
+    ├── sink-channel.js 安卓音频窗口通道（同源 localStorage 收发命令与状态）
     ├── net.js          网络层（桌面 Node / 安卓原生 HTTP / FileTransfer / fetch 四套后端）
     ├── lyric.js        LRC 歌词解析与当前行定位
     ├── update.js       版本检查（对比 GitHub 最新 Release）
@@ -223,7 +224,7 @@
 
 1. 改好代码，把 `extension.js` 的 `VERSION`、`info.json` 的 `version`、README 里的版本号改一致；
 2. 在 GitHub 网页上 **Releases → Draft a new release**，新建 tag（例如 `v1.4.0`）并发布（或者到 **Actions → Release → Run workflow** 手动填版本号）；
-3. 工作流会：校验 `info.json` / `extension.js` 的版本与 tag 一致 → 打包 `noname-netease-musicbox-v1.4.2.zip`（排除 `.github`、`dist` 等）→ 校验压缩包内文件齐全 → 创建/更新 Release 并附上 zip。
+3. 工作流会：校验 `info.json` / `extension.js` 的版本与 tag 一致 → 打包 `noname-netease-musicbox-v1.5.0.zip`（排除 `.github`、`dist` 等）→ 校验压缩包内文件齐全 → 创建/更新 Release 并附上 zip。
 
 版本号不一致时工作流会直接失败并提示，避免发出版本对不上的包。
 

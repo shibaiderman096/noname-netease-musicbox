@@ -1956,6 +1956,10 @@ export function playingSummary() {
 
 export const musicBox = {
 	install,
+	/** 播放器实例（调试/测试用；install() 之后才有值） */
+	get player() {
+		return player;
+	},
 	open,
 	close,
 	toggle,

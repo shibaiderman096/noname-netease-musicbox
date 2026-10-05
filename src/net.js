@@ -701,7 +701,7 @@ export async function diagnose() {
 	const lines = [];
 	const push = (key, value) => lines.push(`${key}: ${value}`);
 
-	push("扩展版本", "1.4.2"); // 与 extension.js 的 VERSION / info.json 保持一致
+	push("扩展版本", "1.5.0"); // 与 extension.js 的 VERSION / info.json 保持一致
 	push("时间", new Date().toLocaleString());
 	push("UA", (typeof navigator !== "undefined" && navigator.userAgent) || "?");
 	push("页面地址", (win && win.location && win.location.href) || "?");
