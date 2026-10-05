@@ -1637,6 +1637,11 @@ export function openFromMenu() {
 	}
 }
 
+/** 当前播放列表的歌单 ID（供「开局自动显示」使用） */
+export function currentPlaylistId() {
+	return (player && player.playlistId) || "";
+}
+
 /**
  * 扩展页面里的选项（音量、音质、播放模式、暂停背景音乐）
  * @param {string} key
@@ -1691,6 +1696,7 @@ export const musicBox = {
 	autoAttach,
 	bootstrap,
 	closeOutput,
+	currentPlaylistId,
 	/** 按歌单 ID 或链接打开歌单（扩展页面 / 开局自动显示使用） */
 	openPlaylistById,
 };

@@ -1,33 +1,24 @@
 /**
  * 网易云音乐盒 - 扩展入口
  *
- * 扩展页面（游戏主菜单 → 扩展 → 网易云音乐盒）提供：
- *   · 音乐盒：打开播放面板，选择歌单/搜索/播放
- *   · 浏览器登录：调用系统默认浏览器打开网易云登录页
- *   · 扫码登录：在游戏内显示二维码，用手机网易云 App 扫码
- *   · 会话：粘贴浏览器 Cookie 以同步登录状态
- *   · 其余为播放相关选项
+ * 扩展页面（游戏主菜单 → 扩展 → 网易云音乐盒）只保留必要入口：
+ *   · 音乐盒：打开播放/登录面板（歌单、搜索、账号登录都在面板里）
+ *   · 检查更新：对比 GitHub 上的最新版本
+ *   · 跳转仓库：用系统浏览器打开项目主页
+ *   · 功能开关：开机续播 / 暂停游戏BGM / 开局自动显示 / 小窗自动收起
+ *   · 使用说明
  */
 import { lib } from "noname";
 import { musicBox } from "./src/ui.js";
-import { session, readConfig, writeConfig } from "./src/store.js";
 import * as api from "./src/api.js";
-import { EXT_NAME, LOGIN_URL, openExternal, parsePlaylistId } from "./src/util.js";
+import { readConfig, writeConfig } from "./src/store.js";
+import { EXT_NAME, openExternal } from "./src/util.js";
+import { checkUpdate, REPO_URL } from "./src/update.js";
 
 export const type = "extension";
 
-/** 把扩展页面输入框里的内容还原成纯文本 */
-function readInput(node) {
-	return String((node && node.innerHTML) || "")
-		.replace(/<br\s*\/?>/gi, "")
-		.replace(/&nbsp;/gi, " ")
-		.replace(/&lt;/gi, "<")
-		.replace(/&gt;/gi, ">")
-		.replace(/&quot;/gi, '"')
-		.replace(/&#39;/gi, "'")
-		.replace(/&amp;/gi, "&")
-		.trim();
-}
+/** 当前版本（与 info.json 保持一致） */
+const VERSION = "1.2.0";
 
 export default async function () {
 	const config = {
@@ -38,112 +29,49 @@ export default async function () {
 		musicbox: {
 			name: "音乐盒",
 			clear: true,
-			intro: "打开网易云音乐盒：选择歌单、搜索歌曲、播放控制",
+			intro: "打开网易云音乐盒：选歌单、搜索歌曲、播放控制，以及账号登录（浏览器登录 / 扫码登录 / 粘贴 Cookie）",
 			onclick() {
 				musicBox.open();
 				return false;
 			},
 		},
-		browserLogin: {
-			name: "浏览器登录",
+		checkUpdate: {
+			name: "检查更新",
 			clear: true,
-			intro: "调用系统默认浏览器打开网易云登录页；登录后可回到「会话」粘贴 Cookie 同步账号",
+			intro: "对比 GitHub 上的最新版本，有新版本可以直接打开下载页",
 			onclick() {
-				const ok = openExternal(LOGIN_URL);
-				musicBox.open("login");
-				musicBox.toast(
-					ok
-						? "已调用系统浏览器打开网易云登录页；登录完成后请用「会话」项粘贴 Cookie"
-						: "无法调用系统浏览器，请手动打开 music.163.com 登录",
-					4200
-				);
-				return false;
-			},
-		},
-		qrLogin: {
-			name: "扫码登录",
-			clear: true,
-			intro: "在游戏内显示二维码，用手机网易云音乐 App 扫码登录（推荐）",
-			onclick() {
-				musicBox.open("login");
-				musicBox.startQrLogin();
-				return false;
-			},
-		},
-		accountInfo: {
-			name: "登录状态",
-			clear: true,
-			nopointer: true,
-			intro: () => musicBox.loginSummary(),
-		},
-		nowPlaying: {
-			name: "正在播放",
-			clear: true,
-			nopointer: true,
-			intro: () => musicBox.playingSummary(),
-			onclick() {
-				musicBox.open();
-				return false;
-			},
-		},
-		cookie: {
-			name: "会话",
-			input: true,
-			init: "",
-			intro: "粘贴浏览器中的 Cookie（包含 MUSIC_U=…）以同步网易云登录状态",
-			onblur() {
-				const value = readInput(this);
-				if (!value) {
-					session.clear();
-					api.setCookie("");
-					musicBox.toast("已清除登录状态");
-					return;
-				}
-				const cookie = value.includes("=") ? value : `MUSIC_U=${value}`;
-				api.setCookie(cookie);
-				session.cookie = cookie;
-				musicBox.toast("已保存，正在验证登录状态…");
-				api.fetchProfile()
-					.then(profile => {
-						session.uid = profile.uid;
-						session.nickname = profile.nickname;
-						session.avatar = profile.avatar;
-						musicBox.toast(`登录成功：${profile.nickname}`);
+				musicBox.toast("正在检查更新…", 1600);
+				checkUpdate(VERSION)
+					.then(result => {
+						if (!result.hasUpdate) {
+							musicBox.toast(`已是最新版本 v${result.current}`, 2800);
+							return;
+						}
+						const go = confirm(`发现新版本 v${result.latest}（当前 v${result.current}）\n\n是否打开下载页面？\n${result.url}`);
+						if (go) {
+							openExternal(result.url);
+						}
 					})
 					.catch(error => {
-						musicBox.toast(`验证失败：${error.message}`, 3600);
+						musicBox.toast(`检查更新失败：${error.message}`, 3600);
 					});
+				return false;
 			},
 		},
-		lastPlaylist: {
-			name: "默认歌单",
-			input: true,
-			init: "",
-			intro: "歌单 ID 或链接；开启「开局自动显示」后进入对局会自动打开这个歌单",
-			onblur() {
-				const value = readInput(this);
-				writeConfig("lastPlaylist", parsePlaylistId(value) || value);
+		repo: {
+			name: "跳转仓库",
+			clear: true,
+			intro: "用系统默认浏览器打开扩展仓库（Releases 里可以下载安装包）",
+			onclick() {
+				const ok = openExternal(REPO_URL);
+				musicBox.toast(ok ? "已用系统浏览器打开仓库页面" : `请手动访问 ${REPO_URL}`, 3200);
+				return false;
 			},
-		},
-		autoOpen: {
-			name: "开局自动显示",
-			init: false,
-			intro: "进入对局后自动打开音乐盒，并载入「默认歌单」",
 		},
 		autoResume: {
 			name: "开机续播",
 			init: true,
-			intro: "开启后，每次打开游戏都会自动接着播放上次的歌曲与进度（关闭游戏时会记住播放位置）",
-		},
-		autoHide: {
-			name: "小窗自动收起",
-			input: true,
-			init: "5",
-			intro: "右下角小窗多少秒无操作后收起为圆形唱片（0 表示不收起），点击唱片可重新展开",
-			onblur() {
-				const value = Number(readInput(this));
-				writeConfig("autoHide", Number.isFinite(value) && value > 0 ? value : 0);
-			},
+			intro: "每次打开游戏都自动接着上次的歌曲与进度播放（关闭游戏时会记住播放位置）",
 		},
 		pauseBgm: {
 			name: "暂停游戏BGM",
@@ -153,40 +81,18 @@ export default async function () {
 				musicBox.applySetting("pauseBgm", bool);
 			},
 		},
-		quality: {
-			name: "音质",
-			init: "exhigh",
-			intro: "音质越高越容易被版权/VIP 限制，遇到无法播放会自动降级",
-			item: {
-				standard: "标准",
-				higher: "较高",
-				exhigh: "极高",
-				lossless: "无损",
-			},
-			onclick(item) {
-				musicBox.applySetting("quality", item);
-			},
+		autoOpen: {
+			name: "开局自动显示",
+			init: false,
+			intro: "进入对局后自动打开音乐盒，并载入上次播放的歌单",
 		},
-		mode: {
-			name: "播放模式",
-			init: "order",
-			item: {
-				order: "顺序播放",
-				loop: "列表循环",
-				single: "单曲循环",
-				shuffle: "随机播放",
-			},
-			onclick(item) {
-				musicBox.applySetting("mode", item);
-			},
-		},
-		volume: {
-			name: "音量",
-			input: true,
-			init: "80",
-			intro: "0 ~ 100",
-			onblur() {
-				musicBox.applySetting("volume", readInput(this));
+		autoHideToggle: {
+			name: "小窗自动收起",
+			init: true,
+			intro: "右下角小窗无操作 5 秒后收成圆形唱片，点击唱片即可重新展开；关掉则一直保持完整小窗",
+			onclick(bool) {
+				writeConfig("autoHideToggle", bool);
+				writeConfig("autoHide", bool ? 5 : 0);
 			},
 		},
 		help: {
@@ -195,26 +101,28 @@ export default async function () {
 			nopointer: true,
 			onclick() {
 				alert(
-					`【网易云音乐盒】使用说明
+					`【网易云音乐盒 v${VERSION}】使用说明
 
-1. 登录（任选其一）：
+1. 打开音乐盒：点扩展页面的「音乐盒」，或对局中点右上角「音乐」按钮。
+   右下角还有悬浮小窗（可拖动、可收成圆盘、点圆盘展开），随时控制播放。
+
+2. 登录（在音乐盒面板的「账号与登录」里，任选其一）：
+   · 浏览器登录：用系统浏览器打开网易云登录页，登录后把 Cookie 粘到「会话」里；
    · 扫码登录：推荐，用手机网易云音乐 App 扫描游戏内二维码；
-   · 浏览器登录：点击后调用系统浏览器打开网易云登录页，登录完成后回到「会话」项粘贴 Cookie；
    · 弹出登录窗口：在独立窗口中登录，音乐盒会自动读取登录状态。
 
-2. 选歌：打开「音乐盒」，左侧可选择我的歌单／推荐歌单／排行榜／搜索／歌单 ID。
+3. 选歌：面板左侧可选我的歌单／推荐歌单／排行榜／搜索／歌单 ID 与链接／常用歌单。
    点击歌曲即可播放，播放时会自动暂停游戏背景音乐。
 
-3. 播放控制：底部有上一首／播放暂停／下一首／播放模式、进度条与音量；
-   也可以在对局中点击右上角「音乐」按钮随时呼出。
-
-   右下角的悬浮小窗可以直接拖动到任意位置；无操作几秒后会自动收起成圆形唱片（点击唱片再展开）。
-
-4. 开机续播：开启「开机续播」后，每次打开游戏都会自动接着上次的歌曲和进度继续播放；
-   可以在扩展页面的「开机续播」里关闭，或把「小窗自动收起」设为 0 让它一直保持完整小窗。
+4. 功能开关（本页面）：
+   · 开机续播：每次打开游戏自动接着上次的歌曲与进度播放；
+   · 暂停游戏BGM：播放网易云音乐时暂停无名杀背景音乐；
+   · 开局自动显示：进入对局后自动打开音乐盒；
+   · 小窗自动收起：右下角小窗无操作 5 秒后收成圆形唱片。
 
 5. 说明：未登录时可以听推荐歌单、排行榜里的免费歌曲；
-   VIP 歌曲未登录时只能试听 45 秒片段，登录会员账号后可完整播放。`
+   VIP 歌曲未登录时只能试听 45 秒片段，登录会员账号后可完整播放。
+   游戏内「重新开始 / 重来」不会打断播放，界面会自动恢复。`
 				);
 				return false;
 			},
@@ -226,11 +134,11 @@ export default async function () {
 		editable: false,
 		config,
 		package: {
-			intro: "在无名杀里听网易云音乐：扩展页面一键调用系统浏览器登录网易云账号，也可扫码登录；支持我的歌单、推荐歌单、排行榜、搜索与歌单 ID，随时选歌播放。游戏内重新开始/重来也不会打断播放。",
+			intro: "在无名杀里听网易云音乐：打开音乐盒即可调用系统浏览器登录网易云账号或扫码登录，支持我的歌单、推荐歌单、排行榜、搜索与歌单 ID，随时选歌播放。游戏内重新开始/重来也不会打断播放。",
 			author: "shibaiderman096",
 			diskURL: "https://github.com/libnoname/noname",
-			forumURL: "https://github.com/shibaiderman096/noname-netease-musicbox",
-			version: "1.1.0",
+			forumURL: REPO_URL,
+			version: VERSION,
 			nopack: true,
 		},
 		precontent(data) {
@@ -253,11 +161,11 @@ export default async function () {
 					setTimeout(() => {
 						try {
 							musicBox.open();
-							const playlist = readConfig("lastPlaylist");
+							const playlist = readConfig("lastPlaylist") || musicBox.currentPlaylistId();
 							if (playlist) {
 								musicBox.openPlaylistById(playlist);
-								musicBox.toast("已载入默认歌单，点击歌曲即可播放", 3200);
 							}
+							musicBox.toast("已打开音乐盒", 2600);
 						} catch (e) {
 							console.warn(`[${EXT_NAME}] 自动打开音乐盒失败`, e);
 						}
