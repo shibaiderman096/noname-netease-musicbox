@@ -57,6 +57,105 @@ export function hasCordovaHttp() {
 	return !!(cordova && cordova.plugin && cordova.plugin.http && typeof cordova.plugin.http.sendRequest === "function");
 }
 
+/* ---------------- Capacitor（由理/cola 等 Capacitor 壳客户端） ---------------- */
+
+function getCapacitor() {
+	const win = getWindow();
+	return win && win.Capacitor && typeof win.Capacitor === "object" ? win.Capacitor : null;
+}
+
+/**
+ * 取得 Capacitor 原生 HTTP 通道（CapacitorHttp）。
+ * 依次尝试：已注册插件代理 -> 通用 nativePromise -> toNative 回调 -> 原生接口
+ */
+function getCapacitorHttp() {
+	const win = getWindow();
+	const capacitor = getCapacitor();
+	if (capacitor) {
+		const plugin = capacitor.Plugins && capacitor.Plugins.CapacitorHttp;
+		if (plugin && typeof plugin.request === "function") {
+			return { style: "plugin", request: options => plugin.request(options) };
+		}
+		if (typeof capacitor.nativePromise === "function") {
+			return { style: "nativePromise", request: options => capacitor.nativePromise("CapacitorHttp", "request", options) };
+		}
+		if (typeof capacitor.toNative === "function" && typeof capacitor.nativeCallback === "function") {
+			return {
+				style: "nativeCallback",
+				request: options =>
+					new Promise((resolve, reject) => {
+						capacitor.nativeCallback(
+							"CapacitorHttp",
+							"request",
+							options,
+							(response, error) => (error ? reject(new Error(error.message || "原生请求失败")) : resolve(response))
+						);
+					}),
+			};
+		}
+	}
+	// 兜底：直接调用注入的原生接口（同步返回 JSON 字符串）
+	const raw = win && win.CapacitorHttpAndroidInterface;
+	if (raw && typeof raw.request === "function") {
+		return {
+			style: "rawInterface",
+			request: options =>
+				new Promise((resolve, reject) => {
+					try {
+						resolve(JSON.parse(raw.request(JSON.stringify(options))));
+					} catch (e) {
+						reject(new Error(`原生接口调用失败：${(e && e.message) || e}`));
+					}
+				}),
+		};
+	}
+	return null;
+}
+
+/** 是否可用 Capacitor 原生 HTTP */
+export function hasCapacitorHttp() {
+	return !!getCapacitorHttp();
+}
+
+function normalizeCapacitorResponse(response) {
+	if (!response) {
+		throw new Error("原生请求没有返回内容");
+	}
+	if (response.error) {
+		const message = typeof response.error === "string" ? response.error : response.error.message || JSON.stringify(response.error);
+		throw new Error(message);
+	}
+	const data = response.data;
+	return {
+		status: response.status || 200,
+		headers: response.headers || {},
+		text: typeof data === "string" ? data : data === undefined || data === null ? "" : JSON.stringify(data),
+		buffer: null,
+	};
+}
+
+function capacitorHttpRequest(options) {
+	const http = getCapacitorHttp();
+	if (!http) {
+		return Promise.reject(new Error("Capacitor 原生 HTTP 不可用"));
+	}
+	const method = (options.method || "GET").toUpperCase();
+	const payload = {
+		url: options.url,
+		method,
+		headers: options.headers || {},
+		connectTimeout: options.timeout || 20000,
+		readTimeout: options.timeout || 20000,
+	};
+	if (options.body && method !== "GET") {
+		payload.data = options.body;
+		payload.dataType = "string";
+	}
+	return Promise.resolve()
+		.then(() => http.request(payload))
+		.then(normalizeCapacitorResponse);
+}
+
 /** 是否可用 cordova-plugin-file-transfer（只要求 FileTransfer 本体，不强求 cordova.file） */
 export function hasFileTransfer() {
 	const win = getWindow();
@@ -89,6 +188,9 @@ export function currentBackend() {
 	if (hasNodeNetwork()) {
 		return "node";
 	}
+	if (hasCapacitorHttp()) {
+		return "capacitor-http";
+	}
 	if (hasCordovaHttp()) {
 		return "cordova-http";
 	}
@@ -110,6 +212,8 @@ function backendName(name) {
 	switch (name) {
 		case "node":
 			return "桌面端（Node）";
+		case "capacitor-http":
+			return "安卓客户端（Capacitor 原生 HTTP）";
 		case "cordova-http":
 			return "安卓客户端（原生 HTTP）";
 		case "file-transfer":
@@ -122,7 +226,7 @@ function backendName(name) {
 /** 当前后端能否读取响应头（扫码登录需要 Set-Cookie） */
 export function canReadResponseHeaders() {
 	const backend = currentBackend();
-	return backend === "node" || backend === "cordova-http";
+	return backend === "node" || backend === "capacitor-http" || backend === "cordova-http";
 }
 
 /* ------------------------------------------------------------------ *
@@ -414,6 +518,8 @@ export function request(options) {
 	switch (currentBackend()) {
 		case "node":
 			return nodeRequest(options);
+		case "capacitor-http":
+			return capacitorHttpRequest(options);
 		case "cordova-http":
 			return cordovaHttpRequest(options);
 		case "file-transfer":
@@ -436,12 +542,20 @@ export async function requestJson(options) {
 	}
 }
 
-/** 读取响应中的 Set-Cookie 列表 */
+/** 读取响应中的 Set-Cookie 列表（大小写不敏感） */
 export function readSetCookie(headers) {
 	if (!headers) {
 		return [];
 	}
-	const raw = headers["set-cookie"] || headers["Set-Cookie"];
+	let raw = headers["set-cookie"] || headers["Set-Cookie"];
+	if (!raw) {
+		for (const key of Object.keys(headers)) {
+			if (key.toLowerCase() === "set-cookie") {
+				raw = headers[key];
+				break;
+			}
+		}
+	}
 	if (!raw) {
 		return [];
 	}
@@ -525,7 +639,7 @@ export async function diagnose() {
 	const lines = [];
 	const push = (key, value) => lines.push(`${key}: ${value}`);
 
-	push("扩展版本", "1.3.1");
+	push("扩展版本", "1.3.2"); // 与 extension.js 的 VERSION / info.json 保持一致
 	push("时间", new Date().toLocaleString());
 	push("UA", (typeof navigator !== "undefined" && navigator.userAgent) || "?");
 	push("页面地址", (win && win.location && win.location.href) || "?");
@@ -551,20 +665,37 @@ export async function diagnose() {
 	push("XMLHttpRequest", typeof XMLHttpRequest);
 
 	push("--- 疑似原生桥接 ---");
-	for (const name of ["NonameAndroidBridge", "noname_shijianInterfaces", "AndroidBridge", "Android", "nonameAndroid", "NonameBridge", "webkit", "plus", "cordova"]) {
+	for (const name of ["Capacitor", "NonameAndroidBridge", "noname_shijianInterfaces", "AndroidBridge", "Android", "nonameAndroid", "NonameBridge", "webkit", "plus", "cordova"]) {
 		const obj = win && win[name];
 		if (obj === undefined) {
 			continue;
 		}
 		push(name, describeObject(obj));
 	}
+	// Capacitor 细节
+	const capacitor = getCapacitor();
+	if (capacitor) {
+		push("Capacitor.Plugins", describeObject(capacitor.Plugins));
+		push("Capacitor 全局方法", describeObject(capacitor));
+		push("CapacitorHttp 通道", hasCapacitorHttp() ? `可用（${getCapacitorHttp().style}）` : "不可用");
+		try {
+			const raw = win.CapacitorHttpAndroidInterface;
+			if (raw) {
+				push("CapacitorHttpAndroidInterface.isEnabled()", typeof raw.isEnabled === "function" ? String(raw.isEnabled()) : "无 isEnabled");
+			}
+		} catch (e) {}
+	}
+	try {
+		const csp = document.querySelector('meta[http-equiv="Content-Security-Policy"]');
+		push("页面 CSP", csp ? csp.getAttribute("content").slice(0, 200) : "未设置");
+	} catch (e) {}
 	const guessed = [];
 	try {
 		for (const key of Object.keys(win || {})) {
 			if (!/bridge|android|native|noname|plus|interface/i.test(key)) {
 				continue;
 			}
-			if (["NonameAndroidBridge", "noname_shijianInterfaces", "AndroidBridge", "Android", "nonameAndroid", "NonameBridge", "webkit", "plus", "cordova"].includes(key)) {
+			if (["NonameAndroidBridge", "noname_shijianInterfaces", "AndroidBridge", "Android", "nonameAndroid", "NonameBridge", "webkit", "plus", "cordova", "Capacitor"].includes(key)) {
 				continue;
 			}
 			let type = typeof win[key];
@@ -605,6 +736,16 @@ export async function diagnose() {
 			});
 			return `HTTP ${res.status}`;
 		})
+	);
+	push(
+		"CapacitorHttp 请求",
+		await probeWithTimeout(async () => {
+			if (!hasCapacitorHttp()) {
+				return "不可用";
+			}
+			const response = await capacitorHttpRequest({ url: testUrl, method: "GET", timeout: 10000 });
+			return `HTTP ${response.status}（${String(response.text).length} 字节）`;
+		}, 12000)
 	);
 	push(
 		"FileTransfer 下载",

@@ -45,6 +45,9 @@ export async function checkUpdate(current) {
 	if (response.status === 404) {
 		throw new Error("仓库还没有发布任何版本");
 	}
+	if (response.status === 403) {
+		throw new Error("GitHub 接口访问受限（403，通常是同一网络请求过多），请稍后再试");
+	}
 	if (response.status !== 200) {
 		throw new Error(`接口返回 HTTP ${response.status}`);
 	}

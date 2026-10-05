@@ -9,7 +9,7 @@
 > **打开游戏自动续播。** 默认开启「开机续播」：每次打开游戏都会自动接着上次的歌曲和进度继续播放。
 > **右下角悬浮小窗可拖动**，无操作几秒后会自动收成一张圆形唱片，点一下唱片就展开。
 
-- 版本：1.3.1
+- 版本：1.3.2
 - 目录：`<游戏目录>/resources/app/extension/网易云音乐盒/`
 - 依赖：无（weapi 加密、二维码生成均为扩展内自带的纯 JS 实现）
 
@@ -26,13 +26,13 @@
 
 ### 方式 B：导入压缩包
 
-1. 到 [Releases](https://github.com/shibaiderman096/noname-netease-musicbox/releases/latest) 下载 `noname-netease-musicbox-v1.3.1.zip`；
+1. 到 [Releases](https://github.com/shibaiderman096/noname-netease-musicbox/releases/latest) 下载 `noname-netease-musicbox-v1.3.2.zip`；
 2. 打开游戏 → `扩展` 菜单 → **导入扩展** → 选择该 zip；
 3. 提示导入成功后游戏会自动重启，扩展同时被启用。
 
 ### 方式 C：安卓客户端
 
-1. 手机上直接下载（或从电脑传过去）`noname-netease-musicbox-v1.3.1.zip`；
+1. 手机上直接下载（或从电脑传过去）`noname-netease-musicbox-v1.3.2.zip`；
 2. 在安卓客户端里用 **导入扩展** 选择该 zip —— 客户端会提示「扩展已导入成功，是否重启游戏」，确认即可；
    也可以把 `网易云音乐盒` 文件夹整个拷贝到客户端的扩展目录里（不同客户端路径略有差异，通常是 `Android/data/<客户端包名>/files/extension/`）。
 3. 重启后进入 `扩展` 菜单，把 **网易云音乐盒 → 开启** 打开。
@@ -193,6 +193,7 @@
 | 后端 | 使用场景 | 特点 |
 | --- | --- | --- |
 | `node` | 桌面端（Electron） | 不受 CORS 限制，能读 `Set-Cookie`（扫码登录靠它） |
+| `capacitor-http` | Capacitor 壳客户端（由理/cola 等，页面里有 `CapacitorHttpAndroidInterface`） | 用 `CapacitorHttp` 原生请求，绕开跨域，能读响应头 |
 | `cordova-http` | 安卓客户端装了 `cordova-plugin-advanced-http` | 原生请求，可自定义任意请求头，能读响应头 |
 | `file-transfer` | 安卓客户端（`cordova-plugin-file-transfer`） | POST 走原生「上传」、GET 走原生「下载」，同样绕开 CORS |
 | `fetch` | 网页版兜底 | 会被跨域拦下（music.163.com 没有 CORS 头） |

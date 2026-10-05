@@ -1356,6 +1356,7 @@ function renderLogin() {
 			<div class="nmb-row">
 				<span class="nmb-sub">手动指定通道：</span>
 				<button class="nmb-btn ${!readConfig("netBackend") ? "nmb-active" : ""}" data-login="net-backend" data-value="">自动</button>
+				<button class="nmb-btn ${readConfig("netBackend") === "capacitor-http" ? "nmb-active" : ""}" data-login="net-backend" data-value="capacitor-http">Capacitor</button>
 				<button class="nmb-btn ${readConfig("netBackend") === "file-transfer" ? "nmb-active" : ""}" data-login="net-backend" data-value="file-transfer">文件传输</button>
 				<button class="nmb-btn ${readConfig("netBackend") === "cordova-http" ? "nmb-active" : ""}" data-login="net-backend" data-value="cordova-http">原生HTTP</button>
 				<button class="nmb-btn ${readConfig("netBackend") === "fetch" ? "nmb-active" : ""}" data-login="net-backend" data-value="fetch">fetch</button>
