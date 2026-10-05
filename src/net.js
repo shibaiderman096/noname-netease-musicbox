@@ -320,24 +320,55 @@ function cordovaHttpRequest(options) {
  * 后端 3：cordova-plugin-file-transfer（POST 走 upload，GET 走 download）
  * ------------------------------------------------------------------ */
 
-/** 可写目录的候选（cordova.file 缺失时用游戏自己的数据目录） */
+/** 可写目录的候选（优先用游戏自己的数据目录，和 game.download 保持一致） */
 function workingDirHint() {
 	const win = getWindow();
+	try {
+		const inited = win && win.localStorage && win.localStorage.getItem("noname_inited");
+		if (inited) {
+			return inited;
+		}
+	} catch (e) {}
 	const file = win && win.cordova && win.cordova.file;
 	if (file) {
-		const dir = file.cacheDirectory || file.externalCacheDirectory || file.dataDirectory || file.externalDataDirectory;
+		const dir = file.externalDataDirectory || file.dataDirectory || file.cacheDirectory || file.externalCacheDirectory;
 		if (dir) {
 			return dir;
 		}
 	}
-	try {
-		return (win.localStorage && win.localStorage.getItem("noname_inited")) || "";
-	} catch (e) {
-		return "";
-	}
+	return "";
 }
 
-/** 取得（并按需创建）一个可写的临时目录 */
+/**
+ * 取入口的 file:// 路径。
+ * 注意：cordova-plugin-file 的 entry.toURL() 返回 cdvfile:// 形式，
+ * 而 cordova-plugin-file-transfer 的 Java 端解析 cdvfile:// 会得到 null 并抛
+ * NullPointerException，所以必须优先用 nativeURL / toInternalURL()（file:///… 形式）。
+ */
+function pathOf(entry, fallback) {
+	if (!entry) {
+		return fallback;
+	}
+	if (typeof entry.nativeURL === "string" && entry.nativeURL) {
+		return entry.nativeURL;
+	}
+	if (typeof entry.toInternalURL === "function") {
+		try {
+			const url = entry.toInternalURL();
+			if (url) {
+				return url;
+			}
+		} catch (e) {}
+	}
+	return fallback;
+}
+
+/** 目录路径统一以 / 结尾 */
+function ensureSlash(path) {
+	return path.endsWith("/") ? path : `${path}/`;
+}
+
+/** 取得（并按需创建）一个可写的临时目录，返回 file:/// 形式且以 / 结尾 */
 function resolveWorkingDir() {
 	return new Promise((resolve, reject) => {
 		const win = getWindow();
@@ -352,19 +383,19 @@ function resolveWorkingDir() {
 				entry.getDirectory(
 					"nmb-tmp",
 					{ create: true },
-					dirEntry => resolve(dirEntry.toURL ? dirEntry.toURL() : dirEntry.nativeURL || `${base}nmb-tmp/`),
+					dirEntry => resolve(ensureSlash(pathOf(dirEntry, `${ensureSlash(base)}nmb-tmp/`))),
 					() => {
 						// 有些客户端的根目录不允许建子目录，就直接用原目录
-						resolve(entry.toURL ? entry.toURL() : entry.nativeURL || base);
+						resolve(ensureSlash(pathOf(entry, ensureSlash(base))));
 					}
 				);
 			},
-			() => reject(new Error("无法访问客户端缓存目录"))
+			() => reject(new Error(`无法访问客户端缓存目录：${base}`))
 		);
 	});
 }
 
-/** 写一个临时文件（充当上传体） */
+/** 写一个临时文件（充当上传体），返回 file:/// 路径 */
 async function writeTempFile(name, content) {
 	const win = getWindow();
 	const dir = await resolveWorkingDir();
@@ -378,7 +409,7 @@ async function writeTempFile(name, content) {
 					fileEntry => {
 						fileEntry.createWriter(
 							writer => {
-								writer.onwriteend = () => resolve(fileEntry.toURL ? fileEntry.toURL() : fileEntry.nativeURL || `${dir}${name}`);
+								writer.onwriteend = () => resolve(pathOf(fileEntry, `${dir}${name}`));
 								writer.onerror = () => reject(new Error("写入临时文件失败"));
 								try {
 									writer.write(new Blob([content], { type: "text/plain" }));
@@ -421,28 +452,44 @@ function fileTransferRequest(options) {
 		return resolveWorkingDir().then(
 			dir =>
 				new Promise((resolve, reject) => {
-					const fileTransfer = new win.FileTransfer();
-					fileTransfer.download(
-						options.url,
-						`${dir}nmb-get.json`,
-						async entry => {
-							try {
-								resolve({ status: 200, headers: {}, text: await readTempFile(entry), buffer: null });
-							} catch (e) {
-								reject(e);
-							}
-						},
-						error => {
-							const status = error && error.http_status ? Number(error.http_status) : 0;
-							if (status > 0) {
-								resolve({ status, headers: {}, text: error.body || "", buffer: null });
-								return;
-							}
-							reject(new Error((error && (error.body || error.exception)) || "网络请求失败"));
-						},
-						false,
-						{ headers: options.headers || {} }
-					);
+					const target = encodeURI(`${dir}nmb-get.json`);
+					const fail = error => {
+						const status = error && error.http_status ? Number(error.http_status) : 0;
+						if (status > 0) {
+							resolve({ status, headers: {}, text: error.body || "", buffer: null });
+							return;
+						}
+						const detail = (error && (error.body || error.exception || error.code)) || "网络请求失败";
+						reject(new Error(`${detail}（目标路径：${target}）`));
+					};
+					const done = async entry => {
+						try {
+							resolve({ status: 200, headers: {}, text: await readTempFile(entry), buffer: null });
+						} catch (e) {
+							reject(e);
+						}
+					};
+					let fileTransfer;
+					try {
+						fileTransfer = new win.FileTransfer();
+					} catch (e) {
+						reject(new Error(`无法创建 FileTransfer：${(e && e.message) || e}`));
+						return;
+					}
+					// 和 game.download 一致：source / target 都 encodeURI。
+					// options 只在真的需要（带 Cookie）时才传：部分客户端的 file-transfer
+					// 收到 options 会在 Java 端抛 NullPointerException（已实测到）。
+					const headers = options.headers || {};
+					const needCookie = Object.keys(headers).some(key => key.toLowerCase() === "cookie");
+					try {
+						if (needCookie) {
+							fileTransfer.download(encodeURI(options.url), target, done, fail, false, { headers });
+						} else {
+							fileTransfer.download(encodeURI(options.url), target, done, fail);
+						}
+					} catch (e) {
+						reject(new Error(`FileTransfer 下载异常：${(e && e.message) || e}`));
+					}
 				})
 		);
 	}
@@ -451,34 +498,46 @@ function fileTransferRequest(options) {
 	return writeTempFile("nmb-post.txt", "x").then(
 		path =>
 			new Promise((resolve, reject) => {
-				const fileTransfer = new win.FileTransfer();
-				fileTransfer.upload(
-					path,
-					options.url,
-					result => {
-						resolve({
-							status: (result && result.responseCode) || 200,
-							headers: {},
-							text: (result && result.response) || "",
-							buffer: null,
-						});
-					},
-					error => {
-						const status = error && error.http_status ? Number(error.http_status) : 0;
-						if (status > 0) {
-							resolve({ status, headers: {}, text: error.body || "", buffer: null });
-							return;
-						}
-						reject(new Error((error && (error.body || error.exception)) || "网络请求失败"));
-					},
-					{
-						headers: options.headers || {},
-						fileKey: "nmb",
-						fileName: "nmb.txt",
-						mimeType: "text/plain",
-						chunkedMode: false,
+				const fail = error => {
+					const status = error && error.http_status ? Number(error.http_status) : 0;
+					if (status > 0) {
+						resolve({ status, headers: {}, text: error.body || "", buffer: null });
+						return;
 					}
-				);
+					const detail = (error && (error.body || error.exception || error.code)) || "网络请求失败";
+					reject(new Error(`${detail}（上传体：${path}）`));
+				};
+				let fileTransfer;
+				try {
+					fileTransfer = new win.FileTransfer();
+				} catch (e) {
+					reject(new Error(`无法创建 FileTransfer：${(e && e.message) || e}`));
+					return;
+				}
+				try {
+					fileTransfer.upload(
+						encodeURI(path),
+						encodeURI(options.url),
+						result => {
+							resolve({
+								status: (result && result.responseCode) || 200,
+								headers: {},
+								text: (result && result.response) || "",
+								buffer: null,
+							});
+						},
+						fail,
+						{
+							headers: options.headers || {},
+							fileKey: "nmb",
+							fileName: "nmb.txt",
+							mimeType: "text/plain",
+							chunkedMode: false,
+						}
+					);
+				} catch (e) {
+					reject(new Error(`FileTransfer 上传异常：${(e && e.message) || e}`));
+				}
 			})
 	);
 }
@@ -639,7 +698,7 @@ export async function diagnose() {
 	const lines = [];
 	const push = (key, value) => lines.push(`${key}: ${value}`);
 
-	push("扩展版本", "1.4.0"); // 与 extension.js 的 VERSION / info.json 保持一致
+	push("扩展版本", "1.4.1"); // 与 extension.js 的 VERSION / info.json 保持一致
 	push("时间", new Date().toLocaleString());
 	push("UA", (typeof navigator !== "undefined" && navigator.userAgent) || "?");
 	push("页面地址", (win && win.location && win.location.href) || "?");
@@ -748,7 +807,26 @@ export async function diagnose() {
 		}, 12000)
 	);
 	push(
-		"FileTransfer 下载",
+		"FileTransfer 缓存目录",
+		await probeWithTimeout(async () => {
+			if (!hasFileTransfer() && !hasCordovaFileSystem()) {
+				return "无文件系统接口";
+			}
+			return await resolveWorkingDir();
+		}, 8000)
+	);
+	push(
+		"FileTransfer 下载（实际使用的代码路径）",
+		await probeWithTimeout(async () => {
+			if (!hasFileTransfer()) {
+				return "无 FileTransfer";
+			}
+			const response = await fileTransferRequest({ url: testUrl, method: "GET", headers: {} });
+			return `HTTP ${response.status}（${String(response.text).length} 字节）`;
+		}, 15000)
+	);
+	push(
+		"FileTransfer 下载（带空 options，复现旧版 NPE）",
 		await probeWithTimeout(async () => {
 			if (!hasFileTransfer()) {
 				return "无 FileTransfer";
@@ -757,8 +835,8 @@ export async function diagnose() {
 			return await new Promise((resolve, reject) => {
 				const fileTransfer = new (getWindow().FileTransfer)();
 				fileTransfer.download(
-					testUrl,
-					`${dir}nmb-diag.json`,
+					encodeURI(testUrl),
+					encodeURI(`${dir}nmb-diag.json`),
 					() => resolve("成功"),
 					error => reject(new Error((error && (error.body || error.exception)) || `http_status=${error && error.http_status}`)),
 					false,
@@ -766,6 +844,22 @@ export async function diagnose() {
 				);
 			});
 		}, 12000)
+	);
+	push(
+		"FileTransfer 上传（POST，安卓端接口调用靠它）",
+		await probeWithTimeout(async () => {
+			if (!hasFileTransfer()) {
+				return "无 FileTransfer";
+			}
+			const response = await fileTransferRequest({
+				url: "https://api.github.com/zen",
+				method: "POST",
+				headers: { "User-Agent": "noname-netease-musicbox", Accept: "text/plain" },
+				body: "x",
+			});
+			// 这里只验证"原生上传通道能拿到 HTTP 响应"，4xx 也算通道可用
+			return `HTTP ${response.status}（收到 ${String(response.text).length} 字节，能拿到响应即通道可用）`;
+		}, 15000)
 	);
 
 	return lines.join("\n");
