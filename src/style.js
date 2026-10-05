@@ -95,6 +95,9 @@ export const MUSIC_BOX_CSS = `
 	height: 42px;
 	padding: 0 10px;
 	background: linear-gradient(180deg, #2c2c35, #24242c);
+	/* 手机端：拖标题栏时不要触发页面滚动/选择文字 */
+	touch-action: none;
+	user-select: none;
 	border-bottom: 1px solid #383842;
 	cursor: move;
 	flex: none;
@@ -411,8 +414,7 @@ export const MUSIC_BOX_CSS = `
 	gap: 6px;
 }
 
-#nmb-root .nmb-empty {
-	padding: 40px 20px;
+#nmb-root .nmb-empty {	padding: 40px 20px;
 	text-align: center;
 	color: #7c7c88;
 	font-size: 13px;
@@ -423,6 +425,65 @@ export const MUSIC_BOX_CSS = `
 	text-align: center;
 	color: #9a9aa2;
 	font-size: 13px;
+}
+
+/* ---------- 歌词视图 ---------- */
+#nmb-root .nmb-lyric {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	padding: 10px 6px 6px;
+	box-sizing: border-box;
+}
+#nmb-root .nmb-lyric-head {
+	flex: none;
+	text-align: center;
+	color: #cfcfd6;
+	font-size: 12px;
+	padding: 4px 10px 10px;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+#nmb-root .nmb-lyric-body {
+	flex: 1 1 auto;
+	overflow-y: auto;
+	overflow-x: hidden;
+	padding: 0 12px;
+	text-align: center;
+	-webkit-overflow-scrolling: touch;
+}
+#nmb-root .nmb-lyric-line {
+	display: block;
+	position: static;
+	padding: 7px 4px;
+	color: #85858f;
+	font-size: 13px;
+	line-height: 20px;
+	cursor: pointer;
+	transition: color 0.25s;
+	word-break: break-word;
+}
+#nmb-root .nmb-lyric-line:hover {
+	color: #c8c8d0;
+}
+#nmb-root .nmb-lyric-line.nmb-active {
+	color: #ec4141;
+	font-size: 15px;
+	font-weight: 600;
+	text-shadow: 0 0 12px rgba(236, 65, 65, 0.35);
+}
+#nmb-root .nmb-lyric-tip {
+	flex: none;
+	text-align: center;
+	color: #5f5f6a;
+	font-size: 11px;
+	padding-top: 6px;
+}
+#nmb-root .nmb-ctrl .nmb-btn.nmb-on {
+	background: #ec4141;
+	border-color: #ec4141;
+	color: #fff;
 }
 
 #nmb-root .nmb-foot {
@@ -614,6 +675,8 @@ export const MUSIC_BOX_CSS = `
 	max-width: 62vw;
 	cursor: move;
 	transition: none;
+	/* 手机端：拖动时不要让页面滚动手势抢走指针 */
+	touch-action: none;
 }
 #nmb-mini.nmb-show {
 	display: flex;
@@ -670,6 +733,8 @@ export const MUSIC_BOX_CSS = `
 	cursor: pointer;
 	filter: drop-shadow(0 6px 16px rgba(0, 0, 0, 0.55));
 	transition: none;
+	/* 手机端：允许拖动圆盘而不触发页面滚动 */
+	touch-action: none;
 }
 #nmb-disc.nmb-show {
 	display: block;

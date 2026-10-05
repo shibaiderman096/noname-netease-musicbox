@@ -10,8 +10,9 @@ import { session, readConfig, writeConfig, viewState } from "./store.js";
 import { Player, MODE_LABELS, hasRunningOutput, readPlaybackRecord } from "./player.js";
 import { MUSIC_BOX_CSS } from "./style.js";
 import { qrEncode } from "./qrcode.js";
-import { EXT_NAME, LOGIN_URL, openExternal, escapeHtml, formatTime, formatCount, parsePlaylistId, getRequire, clamp, isDesktop } from "./util.js";
+import { EXT_NAME, LOGIN_URL, openExternal, escapeHtml, formatTime, formatCount, parsePlaylistId, getRequire, clamp, isDesktop, onPointerDown, bindPointerMove } from "./util.js";
 import { backendLabel, canReadResponseHeaders, currentBackend, diagnose, setForcedBackend } from "./net.js";
+import { parseLrc, currentLyricIndex } from "./lyric.js";
 
 let installed = false;
 let player = null;
@@ -46,6 +47,12 @@ const state = {
 	qrKey: "",
 	qrTimer: null,
 	seeking: false,
+	lyricMode: false,
+	lyricTrackId: "",
+	lyricLines: null,
+	lyricError: "",
+	lyricIndex: -1,
+	diagText: "",
 };
 
 /* ------------------------------------------------------------------ *
@@ -140,6 +147,7 @@ export function install() {
 					<button class="nmb-btn" data-act="prev" title="上一首">⏮</button>
 					<button class="nmb-btn nmb-play" data-act="toggle" title="播放/暂停">▶</button>
 					<button class="nmb-btn" data-act="next" title="下一首">⏭</button>
+					<button class="nmb-btn" data-act="lyric" id="nmb-lyric-btn" title="歌词">词</button>
 					<button class="nmb-btn" data-act="mode" id="nmb-mode" title="播放模式">🔁</button>
 				</div>
 				<div class="nmb-progress">
@@ -323,7 +331,20 @@ function updateTrackDom(track) {
 }
 
 function bindPlayerEvents() {
-	player.on("track", track => updateTrackDom(track));
+	player.on("track", track => {
+		updateTrackDom(track);
+		state.lyricIndex = -1;
+		if (state.lyricMode) {
+			ensureLyric(track).then(() => {
+				if (state.lyricMode) {
+					renderList();
+				}
+			});
+		} else if (track && track.id) {
+			state.lyricTrackId = "";
+			state.lyricLines = null;
+		}
+	});
 	player.on("play", () => {
 		for (const button of dom.playButtons) {
 			button.textContent = "⏸";
@@ -350,6 +371,7 @@ function bindPlayerEvents() {
 		if (duration > 0) {
 			dom.seek.value = String(Math.round((ms / duration) * 1000));
 		}
+		updateLyricHighlight();
 	});
 	player.on("duration", ms => {
 		dom.duration.textContent = formatTime(ms);
@@ -404,7 +426,7 @@ function bindDomEvents() {
 	});
 
 	// 播放控制
-	root.querySelector(".nmb-foot").addEventListener("click", event => {
+	root.querySelector(".nmb-foot").addEventListener("click", async event => {
 		const button = event.target.closest("[data-act]");
 		if (!button) {
 			return;
@@ -420,6 +442,21 @@ function bindDomEvents() {
 			const mode = player.nextMode();
 			writeConfig("mode", mode);
 			toast(MODE_LABELS[mode], 1200);
+		} else if (action === "lyric") {
+			await toggleLyric();
+		}
+	});
+
+	// 歌词：点击某一行跳转到该句
+	dom.list.addEventListener("click", event => {
+		const line = event.target.closest(".nmb-lyric-line");
+		if (!line) {
+			return;
+		}
+		const seconds = Number(line.dataset.time) / 1000;
+		if (isFinite(seconds)) {
+			player.seekSeconds(seconds);
+			toast(`跳转到 ${formatTime(Number(line.dataset.time))}`);
 		}
 	});
 
@@ -493,7 +530,7 @@ function bindDomEvents() {
 	enableDrag();
 }
 
-/** 面板拖拽 */
+/** 面板拖拽（鼠标与触摸都支持） */
 function enableDrag() {
 	const head = root.querySelector("#nmb-drag");
 	let dragging = false;
@@ -501,6 +538,7 @@ function enableDrag() {
 	let startY = 0;
 	let originLeft = 0;
 	let originTop = 0;
+	let unbind = null;
 
 	const onMove = event => {
 		if (!dragging) {
@@ -512,18 +550,23 @@ function enableDrag() {
 		const maxTop = window.innerHeight - 40;
 		dom.panel.style.left = `${Math.min(Math.max(left, -dom.panel.offsetWidth + 80), maxLeft)}px`;
 		dom.panel.style.top = `${Math.min(Math.max(top, 0), maxTop)}px`;
+		if (event.cancelable !== false && typeof event.preventDefault === "function") {
+			event.preventDefault();
+		}
 	};
 	const onUp = () => {
 		if (!dragging) {
 			return;
 		}
 		dragging = false;
-		document.removeEventListener("mousemove", onMove);
-		document.removeEventListener("mouseup", onUp);
+		if (unbind) {
+			unbind();
+			unbind = null;
+		}
 		viewState.panelPos = { left: dom.panel.style.left, top: dom.panel.style.top };
 	};
 
-	head.addEventListener("mousedown", event => {
+	onPointerDown(head, event => {
 		if (event.target.closest("button")) {
 			return;
 		}
@@ -536,9 +579,10 @@ function enableDrag() {
 		dom.panel.classList.add("nmb-dragged");
 		dom.panel.style.left = `${rect.left}px`;
 		dom.panel.style.top = `${rect.top}px`;
-		document.addEventListener("mousemove", onMove);
-		document.addEventListener("mouseup", onUp);
-		event.preventDefault();
+		unbind = bindPointerMove(window, onMove, onUp);
+		if (typeof event.preventDefault === "function") {
+			event.preventDefault();
+		}
 	});
 }
 
@@ -686,6 +730,7 @@ function enableMiniDrag(element, kind) {
 	let startY = 0;
 	let originLeft = 0;
 	let originTop = 0;
+	let unbind = null;
 
 	const onMove = event => {
 		if (!dragging) {
@@ -705,6 +750,9 @@ function enableMiniDrag(element, kind) {
 		} else {
 			positionMini(originLeft + dx + barWidth - DISC_SIZE, originTop + dy + barHeight - DISC_SIZE, false);
 		}
+		if (event.cancelable !== false && typeof event.preventDefault === "function") {
+			event.preventDefault();
+		}
 		resetMiniTimer();
 	};
 
@@ -713,15 +761,18 @@ function enableMiniDrag(element, kind) {
 			return;
 		}
 		dragging = false;
-		document.removeEventListener("mousemove", onMove);
-		document.removeEventListener("mouseup", onUp);
+		if (unbind) {
+			unbind();
+			unbind = null;
+		}
 		if (moved) {
 			miniState.lastDrag = { kind, at: Date.now() };
 			writeConfig("miniPos", JSON.stringify(miniState.pos));
 		}
 	};
 
-	element.addEventListener("mousedown", event => {
+	// 鼠标与触摸都支持（手机上只有触摸事件）
+	onPointerDown(element, event => {
 		if (event.target.closest("button")) {
 			return;
 		}
@@ -732,9 +783,10 @@ function enableMiniDrag(element, kind) {
 		startY = event.clientY;
 		originLeft = rect.left;
 		originTop = rect.top;
-		document.addEventListener("mousemove", onMove);
-		document.addEventListener("mouseup", onUp);
-		event.preventDefault();
+		unbind = bindPointerMove(typeof window !== "undefined" ? window : null, onMove, onUp);
+		if (typeof event.preventDefault === "function") {
+			event.preventDefault();
+		}
 	});
 }
 
@@ -1051,6 +1103,11 @@ function renderList() {
 		renderLogin();
 		return;
 	}
+	// 歌词视图覆盖在列表区域上（播放中随手看词）
+	if (state.lyricMode) {
+		renderLyricsView();
+		return;
+	}
 	if (state.loading) {
 		dom.list.innerHTML = `<div class="nmb-loading">加载中…</div>`;
 		return;
@@ -1074,8 +1131,126 @@ function renderList() {
 	renderPlaylists(state.playlists, view === "mine" && !session.cookie ? "还没有登录，无法读取我的歌单。<br>请先到「账号与登录」登录。" : "暂无内容");
 }
 
-function renderPlaylists(playlists, emptyText) {
-	if (!playlists || !playlists.length) {
+/* ------------------------------------------------------------------ *
+ * 渲染：歌词
+ * ------------------------------------------------------------------ */
+
+/** 歌词缓存：曲目 ID -> 解析后的歌词行 */
+const lyricCache = new Map();
+
+/** 切换歌词视图 */
+export async function toggleLyric(force) {
+	const next = force === undefined ? !state.lyricMode : !!force;
+	state.lyricMode = next;
+	const button = dom.panel.querySelector("#nmb-lyric-btn");
+	if (button) {
+		button.classList.toggle("nmb-on", next);
+	}
+	renderList();
+	if (next) {
+		await ensureLyric(player.current);
+		renderList();
+	}
+}
+
+/** 拉取并解析当前曲目的歌词（带缓存） */
+async function ensureLyric(track) {
+	if (!track || !track.id) {
+		state.lyricTrackId = "";
+		state.lyricLines = [];
+		state.lyricError = "";
+		return;
+	}
+	if (lyricCache.has(track.id)) {
+		state.lyricTrackId = track.id;
+		state.lyricLines = lyricCache.get(track.id);
+		state.lyricError = "";
+		return;
+	}
+	state.lyricTrackId = track.id;
+	state.lyricLines = null;
+	state.lyricError = "";
+	try {
+		const text = await api.fetchLyric(track.id);
+		const lines = parseLrc(text);
+		lyricCache.set(track.id, lines);
+		if (state.lyricTrackId !== track.id) {
+			return;
+		}
+		state.lyricLines = lines;
+	} catch (e) {
+		if (state.lyricTrackId === track.id) {
+			state.lyricLines = [];
+			state.lyricError = (e && e.message) || "歌词加载失败";
+		}
+	}
+}
+
+function renderLyricsView() {
+	const track = player.current;
+	if (!track) {
+		dom.list.innerHTML = `<div class="nmb-empty">还没有在播放歌曲。<br><br>先去「推荐歌单 / 排行榜 / 搜索」里点一首吧。</div>`;
+		return;
+	}
+	if (state.lyricTrackId !== track.id || state.lyricLines === null) {
+		if (state.lyricTrackId !== track.id) {
+			ensureLyric(track).then(() => {
+				if (state.lyricMode) {
+					renderList();
+				}
+			});
+		}
+		dom.list.innerHTML = `<div class="nmb-lyric"><div class="nmb-loading">歌词加载中…</div></div>`;
+		return;
+	}
+	if (state.lyricError) {
+		dom.list.innerHTML = `<div class="nmb-lyric"><div class="nmb-empty">${escapeHtml(state.lyricError)}</div></div>`;
+		return;
+	}
+	if (!state.lyricLines.length) {
+		dom.list.innerHTML = `<div class="nmb-lyric"><div class="nmb-lyric-head">${escapeHtml(track.name)} - ${escapeHtml(track.artist)}</div><div class="nmb-empty">这首歌暂无歌词</div></div>`;
+		return;
+	}
+	dom.list.innerHTML = `
+		<div class="nmb-lyric" id="nmb-lyric-box">
+			<div class="nmb-lyric-head">${escapeHtml(track.name)} - ${escapeHtml(track.artist)}</div>
+			<div class="nmb-lyric-body" id="nmb-lyric-body">
+				${state.lyricLines.map((line, index) => `<div class="nmb-lyric-line" data-index="${index}" data-time="${line.time}">${escapeHtml(line.text)}</div>`).join("")}
+			</div>
+			<div class="nmb-lyric-tip">点击某一行可跳转到该句</div>
+		</div>`;
+	updateLyricHighlight();
+}
+
+/** 只更新高亮行与滚动位置（不重绘整个列表） */
+function updateLyricHighlight() {
+	if (!state.lyricMode || !state.lyricLines || !state.lyricLines.length) {
+		return;
+	}
+	const body = dom.list.querySelector("#nmb-lyric-body");
+	if (!body) {
+		return;
+	}
+	// player.currentTime 的单位是毫秒（与歌词时间轴一致）
+	const index = currentLyricIndex(state.lyricLines, player.currentTime);
+	if (index === state.lyricIndex) {
+		return;
+	}
+	state.lyricIndex = index;
+	const nodes = body.querySelectorAll(".nmb-lyric-line");
+	nodes.forEach((node, i) => node.classList.toggle("nmb-active", i === index));
+	const active = index >= 0 ? nodes[index] : nodes[0];
+	if (active && body.scrollTo) {
+		const target = active.offsetTop - body.clientHeight / 2 + active.offsetHeight / 2;
+		try {
+			body.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+		} catch (e) {
+			body.scrollTop = Math.max(0, target);
+		}
+	}
+}
+
+function renderPlaylists(playlists, emptyText) {	if (!playlists || !playlists.length) {
 		dom.list.innerHTML = `<div class="nmb-empty">${emptyText || "暂无内容"}</div>`;
 		return;
 	}

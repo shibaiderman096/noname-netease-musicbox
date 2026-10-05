@@ -148,6 +148,69 @@ export function formatTime(ms) {
 	return `${m < 10 ? "0" : ""}${m}:${s < 10 ? "0" : ""}${s}`;
 }
 
+/**
+ * 绑定"按下"事件，鼠标与触摸都支持（返回是否使用指针事件）
+ * 安卓/手机端只有触摸事件，必须一并支持，否则拖不动。
+ */
+export function onPointerDown(element, handler) {
+	const win = typeof window !== "undefined" ? window : null;
+	if (win && "onpointerdown" in win) {
+		element.addEventListener("pointerdown", handler);
+		return "pointer";
+	}
+	element.addEventListener("mousedown", handler);
+	element.addEventListener(
+		"touchstart",
+		event => {
+			const touch = event.touches && event.touches[0];
+			if (touch) {
+				handler({
+					...event,
+					clientX: touch.clientX,
+					clientY: touch.clientY,
+					pointerId: touch.identifier,
+					preventDefault: () => event.preventDefault(),
+				});
+			}
+		},
+		{ passive: false }
+	);
+	return "touch";
+}
+
+/** 绑定"移动/抬起"事件（配合 onPointerDown 使用） */
+export function bindPointerMove(win, onMove, onUp) {
+	if (win && "onpointerdown" in win) {
+		win.document.addEventListener("pointermove", onMove);
+		win.document.addEventListener("pointerup", onUp);
+		win.document.addEventListener("pointercancel", onUp);
+		return () => {
+			win.document.removeEventListener("pointermove", onMove);
+			win.document.removeEventListener("pointerup", onUp);
+			win.document.removeEventListener("pointercancel", onUp);
+		};
+	}
+	const move = event => {
+		const touch = event.touches && event.touches[0];
+		if (touch) {
+			onMove({ ...event, clientX: touch.clientX, clientY: touch.clientY });
+		}
+	};
+	const up = event => onUp(event);
+	win.document.addEventListener("mousemove", move);
+	win.document.addEventListener("mouseup", up);
+	win.document.addEventListener("touchmove", move, { passive: false });
+	win.document.addEventListener("touchend", up);
+	win.document.addEventListener("touchcancel", up);
+	return () => {
+		win.document.removeEventListener("mousemove", move);
+		win.document.removeEventListener("mouseup", up);
+		win.document.removeEventListener("touchmove", move);
+		win.document.removeEventListener("touchend", up);
+		win.document.removeEventListener("touchcancel", up);
+	};
+}
+
 /** 播放量等数字的友好显示 */
 export function formatCount(num) {
 	const n = Number(num) || 0;
@@ -184,8 +247,7 @@ export function parsePlaylistId(input) {
 }
 
 /** 简易事件触发器 */
-export class Emitter {
-	constructor() {
+export class Emitter {	constructor() {
 		this._handlers = {};
 	}
 	on(type, handler) {

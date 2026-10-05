@@ -1,0 +1,91 @@
+name: Release
+
+# 打 tag（v1.4.0 之类）或在 Actions 页面手动运行时，
+# 自动把扩展打包成 zip 并作为附件挂到 Release 上。
+# 这样就不需要本地 git push，也不用手工上传附件。
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "版本号（例如 v1.4.0），必须与 info.json 的 version 一致"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: 打包并发布扩展
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 确定版本号并校验 info.json
+        id: version
+        run: |
+          set -e
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          case "$TAG" in
+            v*) ;;
+            *) echo "::error::版本号必须以 v 开头，例如 v1.4.0（当前：$TAG）"; exit 1 ;;
+          esac
+          VERSION="${TAG#v}"
+          INFO_VERSION="$(node -p "require('./info.json').version")"
+          if [ "$INFO_VERSION" != "$VERSION" ]; then
+            echo "::error::info.json 里的版本是 $INFO_VERSION，与 tag $VERSION 不一致"
+            exit 1
+          fi
+          EXT_VERSION="$(node -p "require('fs').readFileSync('extension.js','utf8').match(/const VERSION = \"([^\"]+)\"/)[1]")"
+          if [ "$EXT_VERSION" != "$VERSION" ]; then
+            echo "::error::extension.js 里的 VERSION 是 $EXT_VERSION，与 tag $VERSION 不一致"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "版本校验通过：$TAG"
+
+      - name: 打包 zip
+        run: |
+          set -e
+          TAG="${{ steps.version.outputs.tag }}"
+          mkdir -p dist
+          # 仓库根目录就是扩展目录，压缩包内保持同样的结构
+          zip -r "dist/noname-netease-musicbox-${TAG}.zip" . \
+            -x ".git/*" ".git/*" ".github/*" "dist/*" ".gitattributes" ".gitignore" "*.zip"
+          unzip -l "dist/noname-netease-musicbox-${TAG}.zip"
+
+      - name: 校验 zip 内容
+        run: |
+          set -e
+          TAG="${{ steps.version.outputs.tag }}"
+          ZIP="dist/noname-netease-musicbox-${TAG}.zip"
+          for entry in "extension.js" "info.json" "README.md" "player.html" "src/api.js" "src/net.js" "src/ui.js" "src/lyric.js"; do
+            if ! unzip -l "$ZIP" | grep -q " ${entry}$"; then
+              echo "::error::压缩包里缺少 ${entry}"
+              exit 1
+            fi
+          done
+          if unzip -l "$ZIP" | grep -q " \.github/"; then
+            echo "::error::压缩包里不应包含 .github 目录"
+            exit 1
+          fi
+          echo "zip 内容校验通过"
+
+      - name: 发布 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: 网易云音乐盒 ${{ steps.version.outputs.tag }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: dist/noname-netease-musicbox-*.zip
