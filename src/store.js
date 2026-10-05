@@ -24,6 +24,7 @@ const DEFAULTS = {
 	autoHide: 5,
 	miniPos: "",
 	panelPos: "",
+	netBackend: "",
 };
 
 /** 读取配置（带默认值） */

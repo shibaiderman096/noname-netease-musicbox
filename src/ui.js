@@ -11,7 +11,7 @@ import { Player, MODE_LABELS, hasRunningOutput, readPlaybackRecord } from "./pla
 import { MUSIC_BOX_CSS } from "./style.js";
 import { qrEncode } from "./qrcode.js";
 import { EXT_NAME, LOGIN_URL, openExternal, escapeHtml, formatTime, formatCount, parsePlaylistId, getRequire, clamp, isDesktop } from "./util.js";
-import { backendLabel, canReadResponseHeaders } from "./net.js";
+import { backendLabel, canReadResponseHeaders, currentBackend, diagnose, setForcedBackend } from "./net.js";
 
 let installed = false;
 let player = null;
@@ -216,6 +216,7 @@ export function install() {
 		bgmProvider: () => ui && ui.backgroundMusic,
 	});
 	api.setCookie(session.cookie);
+	setForcedBackend(readConfig("netBackend") || "");
 	dom.volume.value = String(Math.round(player.volume * 100));
 	updateModeButton();
 	bindPlayerEvents();
@@ -1328,16 +1329,38 @@ function renderLogin() {
 	const backend = backendLabel();
 	const headersOk = canReadResponseHeaders();
 	const desktop = isDesktop();
+	const backendValue = currentBackend();
 	dom.list.innerHTML = `
 	<div class="nmb-login">
 		<div class="nmb-block">
 			<h4>当前状态</h4>
 			<div>${session.cookie ? (session.nickname ? `已登录：<b>${escapeHtml(session.nickname)}</b>（UID ${escapeHtml(session.uid)}）` : "已保存登录信息，正在读取账号…") : "未登录（仍可浏览推荐歌单、排行榜，以及播放免费歌曲）"}</div>
-			<div class="nmb-hint">网络通道：${escapeHtml(backend)}${headersOk ? "" : "（该通道读不到响应头，扫码登录可能无法自动同步）"}</div>
+			<div class="nmb-hint">网络通道：<b>${escapeHtml(backend)}</b>${headersOk ? "" : "（该通道读不到响应头，扫码登录可能无法自动同步）"}</div>
+			${
+				backendValue === "fetch"
+					? '<div class="nmb-hint" style="color:#ffb400">当前通道是浏览器 fetch，安卓客户端上通常会被跨域拦下（Failed to fetch）。请点下面的「网络诊断」把结果发给我，或试试手动指定其它通道。</div>'
+					: ""
+			}
 			<div class="nmb-row">
 				<button class="nmb-btn nmb-primary" data-login="refresh">刷新账号信息</button>
 				<button class="nmb-btn" data-login="logout">退出登录</button>
 			</div>
+		</div>
+
+		<div class="nmb-block">
+			<h4>网络诊断</h4>
+			<div class="nmb-row">
+				<button class="nmb-btn nmb-primary" data-login="net-diag">🩺 运行诊断</button>
+				<button class="nmb-btn" data-login="net-copy">📋 复制结果</button>
+			</div>
+			<div class="nmb-row">
+				<span class="nmb-sub">手动指定通道：</span>
+				<button class="nmb-btn ${!readConfig("netBackend") ? "nmb-active" : ""}" data-login="net-backend" data-value="">自动</button>
+				<button class="nmb-btn ${readConfig("netBackend") === "file-transfer" ? "nmb-active" : ""}" data-login="net-backend" data-value="file-transfer">文件传输</button>
+				<button class="nmb-btn ${readConfig("netBackend") === "cordova-http" ? "nmb-active" : ""}" data-login="net-backend" data-value="cordova-http">原生HTTP</button>
+				<button class="nmb-btn ${readConfig("netBackend") === "fetch" ? "nmb-active" : ""}" data-login="net-backend" data-value="fetch">fetch</button>
+			</div>
+			<textarea class="nmb-input" id="nmb-diag" readonly placeholder="点「运行诊断」，结果会显示在这里；长按可全选复制，发给我就能定位问题">${escapeHtml(state.diagText || "")}</textarea>
 		</div>
 
 		<div class="nmb-block">
@@ -1413,6 +1436,16 @@ function renderLogin() {
 			renderLogin();
 		} else if (action === "save-cookie") {
 			await saveCookieFromInput();
+		} else if (action === "net-diag") {
+			await runNetDiagnose();
+		} else if (action === "net-copy") {
+			copyDiagText();
+		} else if (action === "net-backend") {
+			const value = button.dataset.value || "";
+			writeConfig("netBackend", value);
+			setForcedBackend(value);
+			renderLogin();
+			toast(value ? `已手动指定通道：${backendLabel()}` : "已恢复自动选择通道", 2600);
 		} else if (action === "clear-cookie") {
 			const input = dom.list.querySelector("#nmb-cookie-input");
 			if (input) {
@@ -1438,6 +1471,54 @@ function renderLogin() {
 	if (qrStatusNode && state.qrStatus) {
 		qrStatusNode.textContent = state.qrStatus;
 	}
+}
+
+/** 运行网络诊断（安卓端排查用） */
+async function runNetDiagnose() {
+	const box = dom.list.querySelector("#nmb-diag");
+	if (box) {
+		box.value = "正在诊断，请稍候…";
+	}
+	toast("正在诊断网络环境…", 2000);
+	try {
+		state.diagText = await diagnose();
+	} catch (e) {
+		state.diagText = `诊断失败：${(e && e.message) || e}`;
+	}
+	const current = dom.list.querySelector("#nmb-diag");
+	if (current) {
+		current.value = state.diagText;
+		current.scrollTop = 0;
+	}
+	toast("诊断完成：长按输入框全选复制，或点「复制结果」", 3400);
+}
+
+/** 复制诊断结果 */
+function copyDiagText() {
+	const box = dom.list.querySelector("#nmb-diag");
+	const text = (box && box.value) || state.diagText || "";
+	if (!text) {
+		toast("请先点「运行诊断」");
+		return;
+	}
+	try {
+		if (box) {
+			box.focus();
+			box.select();
+			if (document.execCommand && document.execCommand("copy")) {
+				toast("诊断结果已复制");
+				return;
+			}
+		}
+	} catch (e) {}
+	if (typeof navigator !== "undefined" && navigator.clipboard && navigator.clipboard.writeText) {
+		navigator.clipboard.writeText(text).then(
+			() => toast("诊断结果已复制"),
+			() => toast("复制失败，请长按输入框手动全选复制", 3400)
+		);
+		return;
+	}
+	toast("复制失败，请长按输入框手动全选复制", 3400);
 }
 
 /** 保存手填 Cookie */

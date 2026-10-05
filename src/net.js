@@ -57,21 +57,42 @@ export function hasCordovaHttp() {
 	return !!(cordova && cordova.plugin && cordova.plugin.http && typeof cordova.plugin.http.sendRequest === "function");
 }
 
-/** 是否可用 cordova-plugin-file-transfer */
+/** 是否可用 cordova-plugin-file-transfer（只要求 FileTransfer 本体，不强求 cordova.file） */
 export function hasFileTransfer() {
 	const win = getWindow();
-	return !!(win && typeof win.FileTransfer === "function" && win.cordova && win.cordova.file);
+	return !!(win && typeof win.FileTransfer === "function");
+}
+
+/** 是否具备可用的文件系统 API（FileTransfer 上传/下载需要写临时文件） */
+export function hasCordovaFileSystem() {
+	const win = getWindow();
+	if (!win || typeof win.resolveLocalFileSystemURL !== "function") {
+		return false;
+	}
+	return !!(workingDirHint() || (win.cordova && win.cordova.file));
+}
+
+/** 手动指定后端（诊断用，空字符串 = 自动） */
+let forcedBackend = "";
+export function setForcedBackend(name) {
+	forcedBackend = name || "";
+}
+export function getForcedBackend() {
+	return forcedBackend;
 }
 
 /** 当前实际使用的网络后端 */
 export function currentBackend() {
+	if (forcedBackend) {
+		return forcedBackend;
+	}
 	if (hasNodeNetwork()) {
 		return "node";
 	}
 	if (hasCordovaHttp()) {
 		return "cordova-http";
 	}
-	if (hasFileTransfer()) {
+	if (hasFileTransfer() && hasCordovaFileSystem()) {
 		return "file-transfer";
 	}
 	return "fetch";
@@ -79,7 +100,14 @@ export function currentBackend() {
 
 /** 后端的中文说明（用于界面提示） */
 export function backendLabel() {
-	switch (currentBackend()) {
+	if (forcedBackend) {
+		return `${backendName(forcedBackend)}（手动指定）`;
+	}
+	return backendName(currentBackend());
+}
+
+function backendName(name) {
+	switch (name) {
 		case "node":
 			return "桌面端（Node）";
 		case "cordova-http":
@@ -87,7 +115,7 @@ export function backendLabel() {
 		case "file-transfer":
 			return "安卓客户端（原生文件传输）";
 		default:
-			return "浏览器 fetch（可能受跨域限制）";
+			return "浏览器 fetch（会受跨域限制）";
 	}
 }
 
@@ -188,21 +216,55 @@ function cordovaHttpRequest(options) {
  * 后端 3：cordova-plugin-file-transfer（POST 走 upload，GET 走 download）
  * ------------------------------------------------------------------ */
 
-function cacheDirectory() {
+/** 可写目录的候选（cordova.file 缺失时用游戏自己的数据目录） */
+function workingDirHint() {
 	const win = getWindow();
 	const file = win && win.cordova && win.cordova.file;
-	return file ? file.cacheDirectory || file.externalCacheDirectory || file.dataDirectory : null;
+	if (file) {
+		const dir = file.cacheDirectory || file.externalCacheDirectory || file.dataDirectory || file.externalDataDirectory;
+		if (dir) {
+			return dir;
+		}
+	}
+	try {
+		return (win.localStorage && win.localStorage.getItem("noname_inited")) || "";
+	} catch (e) {
+		return "";
+	}
+}
+
+/** 取得（并按需创建）一个可写的临时目录 */
+function resolveWorkingDir() {
+	return new Promise((resolve, reject) => {
+		const win = getWindow();
+		const base = workingDirHint();
+		if (!win || typeof win.resolveLocalFileSystemURL !== "function" || !base) {
+			reject(new Error("客户端没有可用的文件系统接口"));
+			return;
+		}
+		win.resolveLocalFileSystemURL(
+			base,
+			entry => {
+				entry.getDirectory(
+					"nmb-tmp",
+					{ create: true },
+					dirEntry => resolve(dirEntry.toURL ? dirEntry.toURL() : dirEntry.nativeURL || `${base}nmb-tmp/`),
+					() => {
+						// 有些客户端的根目录不允许建子目录，就直接用原目录
+						resolve(entry.toURL ? entry.toURL() : entry.nativeURL || base);
+					}
+				);
+			},
+			() => reject(new Error("无法访问客户端缓存目录"))
+		);
+	});
 }
 
 /** 写一个临时文件（充当上传体） */
-function writeTempFile(name, content) {
+async function writeTempFile(name, content) {
+	const win = getWindow();
+	const dir = await resolveWorkingDir();
 	return new Promise((resolve, reject) => {
-		const win = getWindow();
-		const dir = cacheDirectory();
-		if (!dir || typeof win.resolveLocalFileSystemURL !== "function") {
-			reject(new Error("无法访问客户端缓存目录"));
-			return;
-		}
 		win.resolveLocalFileSystemURL(
 			dir,
 			entry => {
@@ -252,35 +314,33 @@ function fileTransferRequest(options) {
 	const win = getWindow();
 
 	if (method === "GET") {
-		return new Promise((resolve, reject) => {
-			const dir = cacheDirectory();
-			if (!dir) {
-				reject(new Error("无法访问客户端缓存目录"));
-				return;
-			}
-			const fileTransfer = new win.FileTransfer();
-			fileTransfer.download(
-				options.url,
-				`${dir}nmb-get.json`,
-				async entry => {
-					try {
-						resolve({ status: 200, headers: {}, text: await readTempFile(entry), buffer: null });
-					} catch (e) {
-						reject(e);
-					}
-				},
-				error => {
-					const status = error && error.http_status ? Number(error.http_status) : 0;
-					if (status > 0) {
-						resolve({ status, headers: {}, text: error.body || "", buffer: null });
-						return;
-					}
-					reject(new Error((error && (error.body || error.exception)) || "网络请求失败"));
-				},
-				false,
-				{ headers: options.headers || {} }
-			);
-		});
+		return resolveWorkingDir().then(
+			dir =>
+				new Promise((resolve, reject) => {
+					const fileTransfer = new win.FileTransfer();
+					fileTransfer.download(
+						options.url,
+						`${dir}nmb-get.json`,
+						async entry => {
+							try {
+								resolve({ status: 200, headers: {}, text: await readTempFile(entry), buffer: null });
+							} catch (e) {
+								reject(e);
+							}
+						},
+						error => {
+							const status = error && error.http_status ? Number(error.http_status) : 0;
+							if (status > 0) {
+								resolve({ status, headers: {}, text: error.body || "", buffer: null });
+								return;
+							}
+							reject(new Error((error && (error.body || error.exception)) || "网络请求失败"));
+						},
+						false,
+						{ headers: options.headers || {} }
+					);
+				})
+		);
 	}
 
 	// POST：参数已在查询串上，body 用一个占位文件代替（服务端只读查询串）
@@ -386,6 +446,188 @@ export function readSetCookie(headers) {
 		return [];
 	}
 	return Array.isArray(raw) ? raw : [raw];
+}
+
+/* ------------------------------------------------------------------ *
+ * 网络诊断（安卓端排查用：把结果复制反馈即可定位缺哪条通道）
+ * ------------------------------------------------------------------ */
+
+function describeObject(obj) {
+	if (obj === undefined) {
+		return "未定义";
+	}
+	if (obj === null) {
+		return "null";
+	}
+	const methods = [];
+	const props = [];
+	let keys = [];
+	try {
+		keys = Object.keys(obj);
+	} catch (e) {
+		return `(${typeof obj}) 无法枚举`;
+	}
+	for (const key of keys.slice(0, 60)) {
+		try {
+			if (typeof obj[key] === "function") {
+				methods.push(key);
+			} else if (typeof obj[key] === "string" || typeof obj[key] === "number" || typeof obj[key] === "boolean") {
+				props.push(`${key}=${String(obj[key]).slice(0, 24)}`);
+			} else {
+				props.push(`${key}:${typeof obj[key]}`);
+			}
+		} catch (e) {
+			props.push(`${key}:读取失败`);
+		}
+	}
+	const head = `(${typeof obj})`;
+	const methodText = methods.length ? `方法[${methods.join(" ")}]` : "无方法";
+	const propText = props.length ? `属性[${props.slice(0, 20).join(" ")}]` : "";
+	return `${head} ${methodText} ${propText}`.trim();
+}
+
+function probeWithTimeout(run, timeout = 8000) {
+	return new Promise(resolve => {
+		let settled = false;
+		const timer = setTimeout(() => {
+			if (!settled) {
+				settled = true;
+				resolve("超时（无响应）");
+			}
+		}, timeout);
+		Promise.resolve()
+			.then(run)
+			.then(
+				value => {
+					if (!settled) {
+						settled = true;
+						clearTimeout(timer);
+						resolve(value);
+					}
+				},
+				error => {
+					if (!settled) {
+						settled = true;
+						clearTimeout(timer);
+						resolve(`失败：${(error && error.name) || "Error"} - ${(error && error.message) || error}`);
+					}
+				}
+			);
+	});
+}
+
+/**
+ * 采集运行环境信息（安卓端排查网络通道用）
+ * @returns {Promise<string>} 可直接复制反馈的文本
+ */
+export async function diagnose() {
+	const win = getWindow();
+	const lines = [];
+	const push = (key, value) => lines.push(`${key}: ${value}`);
+
+	push("扩展版本", "1.3.1");
+	push("时间", new Date().toLocaleString());
+	push("UA", (typeof navigator !== "undefined" && navigator.userAgent) || "?");
+	push("页面地址", (win && win.location && win.location.href) || "?");
+	push("origin/protocol", win && win.location ? `${win.location.origin} / ${win.location.protocol}` : "?");
+	push("当前网络通道", backendLabel());
+	push("手动指定", forcedBackend || "（自动）");
+
+	push("--- 能力探测 ---");
+	push("cordova", describeObject(win && win.cordova));
+	push("cordova.plugins", describeObject(win && win.cordova && win.cordova.plugins));
+	push("cordova.plugin", describeObject(win && win.cordova && win.cordova.plugin));
+	push("cordova.file", describeObject(win && win.cordova && win.cordova.file));
+	push("FileTransfer", typeof (win && win.FileTransfer));
+	push("resolveLocalFileSystemURL", typeof (win && win.resolveLocalFileSystemURL));
+	push("localStorage.noname_inited", (() => {
+		try {
+			return (win.localStorage && win.localStorage.getItem("noname_inited")) || "（空）";
+		} catch (e) {
+			return "读取失败";
+		}
+	})());
+	push("fetch", typeof fetch);
+	push("XMLHttpRequest", typeof XMLHttpRequest);
+
+	push("--- 疑似原生桥接 ---");
+	for (const name of ["NonameAndroidBridge", "noname_shijianInterfaces", "AndroidBridge", "Android", "nonameAndroid", "NonameBridge", "webkit", "plus", "cordova"]) {
+		const obj = win && win[name];
+		if (obj === undefined) {
+			continue;
+		}
+		push(name, describeObject(obj));
+	}
+	const guessed = [];
+	try {
+		for (const key of Object.keys(win || {})) {
+			if (!/bridge|android|native|noname|plus|interface/i.test(key)) {
+				continue;
+			}
+			if (["NonameAndroidBridge", "noname_shijianInterfaces", "AndroidBridge", "Android", "nonameAndroid", "NonameBridge", "webkit", "plus", "cordova"].includes(key)) {
+				continue;
+			}
+			let type = typeof win[key];
+			guessed.push(`${key}(${type})`);
+		}
+	} catch (e) {}
+	push("其它疑似对象", guessed.slice(0, 30).join(" ") || "（无）");
+
+	push("--- 连通性测试（GET music.163.com）---");
+	const testUrl = "https://music.163.com/song/media/outer/url?id=347230.mp3";
+	push(
+		"fetch",
+		await probeWithTimeout(async () => {
+			const res = await fetch(testUrl, { method: "GET" });
+			return `HTTP ${res.status}`;
+		})
+	);
+	push(
+		"XMLHttpRequest",
+		await probeWithTimeout(
+			() =>
+				new Promise((resolve, reject) => {
+					const xhr = new XMLHttpRequest();
+					xhr.open("GET", testUrl, true);
+					xhr.timeout = 6000;
+					xhr.onload = () => resolve(`HTTP ${xhr.status}`);
+					xhr.onerror = () => reject(new Error("网络错误（多为跨域被拦）"));
+					xhr.ontimeout = () => reject(new Error("超时"));
+					xhr.send();
+				})
+		)
+	);
+	push(
+		"fetch(api.github.com)",
+		await probeWithTimeout(async () => {
+			const res = await fetch("https://api.github.com/repos/shibaiderman096/noname-netease-musicbox/releases/latest", {
+				headers: { Accept: "application/vnd.github+json" },
+			});
+			return `HTTP ${res.status}`;
+		})
+	);
+	push(
+		"FileTransfer 下载",
+		await probeWithTimeout(async () => {
+			if (!hasFileTransfer()) {
+				return "无 FileTransfer";
+			}
+			const dir = await resolveWorkingDir();
+			return await new Promise((resolve, reject) => {
+				const fileTransfer = new (getWindow().FileTransfer)();
+				fileTransfer.download(
+					testUrl,
+					`${dir}nmb-diag.json`,
+					() => resolve("成功"),
+					error => reject(new Error((error && (error.body || error.exception)) || `http_status=${error && error.http_status}`)),
+					false,
+					{}
+				);
+			});
+		}, 12000)
+	);
+
+	return lines.join("\n");
 }
 
 export const USER_AGENT =
